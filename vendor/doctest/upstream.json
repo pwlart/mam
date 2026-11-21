@@ -1,0 +1,34 @@
+{
+  "name": "doctest",
+  "version": "2.5.3",
+  "commit": "2d0a9359a60c51affe2a9bebb1be1dca47868151",
+  "license": "MIT (doctest), BSD-3-Clause (CMake integration)",
+  "upstream": "https://github.com/doctest/doctest",
+  "files": {
+    "doctest.h": {
+      "url": "https://raw.githubusercontent.com/doctest/doctest/2d0a9359a60c51affe2a9bebb1be1dca47868151/doctest/doctest.h",
+      "sha256": "cfd518a3ef90f67e1f3ba514df23fb3627437de1a2feeba78cf5062a40021421",
+      "bytes": 362930
+    },
+    "LICENSE.txt": {
+      "url": "https://raw.githubusercontent.com/doctest/doctest/2d0a9359a60c51affe2a9bebb1be1dca47868151/LICENSE.txt",
+      "sha256": "0fe0b331fa1513dcce8604ff1fa925f32d1cea17d8aeb1c2471fad40d291adc5",
+      "bytes": 1086
+    },
+    "cmake/doctest.cmake": {
+      "url": "https://raw.githubusercontent.com/doctest/doctest/2d0a9359a60c51affe2a9bebb1be1dca47868151/scripts/cmake/doctest.cmake",
+      "sha256": "6a60f778f86958c23d308d532356b37ec6e735137be7adf02cb17d688b559711",
+      "bytes": 7841
+    },
+    "cmake/doctestAddTests.cmake": {
+      "url": "https://raw.githubusercontent.com/doctest/doctest/2d0a9359a60c51affe2a9bebb1be1dca47868151/scripts/cmake/doctestAddTests.cmake",
+      "sha256": "3ec2839f12b7a12b0d7ef6244b60eecae40ad797caa3f016fc09875956a518dc",
+      "bytes": 3652
+    },
+    "LICENSE-CMake.txt": {
+      "url": "https://raw.githubusercontent.com/Kitware/CMake/v3.31.10/Copyright.txt",
+      "sha256": "0676e30827684487aa0ea8f72f01e9460a6320fa34a2888df0ad1dd3e8a06eb8",
+      "bytes": 5477
+    }
+  }
+}

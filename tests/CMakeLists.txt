@@ -1,0 +1,74 @@
+add_executable(mam_tests
+    test_main.cpp
+    test_parameters.cpp
+    test_commands.cpp
+    test_dsp.cpp
+    test_transport.cpp
+    test_audio_file.cpp
+    test_native_audio.cpp
+)
+target_include_directories(mam_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(mam_tests PRIVATE doctest::doctest mam_render)
+mam_configure_target(mam_tests)
+include(${PROJECT_SOURCE_DIR}/vendor/doctest/cmake/doctest.cmake)
+doctest_discover_tests(mam_tests TEST_PREFIX "unit." PROPERTIES TIMEOUT 30 LABELS unit)
+
+find_program(MAM_BASH bash REQUIRED)
+foreach(rate IN ITEMS 44100 48000)
+    add_test(NAME render.parity.${rate}
+        COMMAND ${MAM_BASH} ${PROJECT_SOURCE_DIR}/tools/topo_parity.sh
+        $<TARGET_FILE:mam> ${PROJECT_SOURCE_DIR}/tests/fixtures/scheduler-parity.json
+        2 ${rate} 42)
+    set_tests_properties(render.parity.${rate} PROPERTIES TIMEOUT 60 LABELS integration)
+endforeach()
+foreach(case IN ITEMS missing malformed duplicate mismatch exit_failure missing_audio valid)
+    add_test(NAME tooling.parity.${case} COMMAND ${CMAKE_COMMAND}
+        -DCASE=${case} -DBASH=${MAM_BASH}
+        -DPARITY_SCRIPT=${PROJECT_SOURCE_DIR}/tools/topo_parity.sh
+        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/parity-${case}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/parity_contract.cmake)
+    set_tests_properties(tooling.parity.${case} PROPERTIES TIMEOUT 15 LABELS tooling)
+endforeach()
+add_test(NAME cli.strict_schema_unavailable COMMAND ${CMAKE_COMMAND}
+    -DMAM=$<TARGET_FILE:mam>
+    -DRACK=${PROJECT_SOURCE_DIR}/tests/fixtures/scheduler-parity.json
+    -DWORK=${CMAKE_CURRENT_BINARY_DIR}/strict-schema
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/strict_schema.cmake)
+set_tests_properties(cli.strict_schema_unavailable PROPERTIES TIMEOUT 15 LABELS integration)
+add_test(NAME vendor.doctest_integrity COMMAND ${CMAKE_COMMAND}
+    -DROOT=${PROJECT_SOURCE_DIR}/vendor/doctest
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/vendor_integrity.cmake)
+set_tests_properties(vendor.doctest_integrity PROPERTIES TIMEOUT 10 LABELS tooling)
+
+add_test(NAME cli.build_identity COMMAND ${CMAKE_COMMAND}
+    -DMAM=$<TARGET_FILE:mam> -DVERSION=${PROJECT_VERSION}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/build_info_cli.cmake)
+set_tests_properties(cli.build_identity PROPERTIES TIMEOUT 15 LABELS tooling)
+add_test(NAME tooling.build_identity COMMAND ${CMAKE_COMMAND}
+    -DGENERATOR_SCRIPT=${PROJECT_SOURCE_DIR}/cmake/GenerateBuildIdentity.cmake
+    -DWORK=${CMAKE_CURRENT_BINARY_DIR}/identity-fixture
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/build_identity.cmake)
+set_tests_properties(tooling.build_identity PROPERTIES TIMEOUT 60 LABELS tooling)
+
+if(MAM_ENABLE_PYTHON_TESTS)
+    if(NOT MAM_PYTHON_EXECUTABLE)
+        message(FATAL_ERROR "Set MAM_PYTHON_EXECUTABLE to the prepared Python environment")
+    endif()
+    execute_process(COMMAND ${MAM_PYTHON_EXECUTABLE} -I -c "import pytest, jsonschema, numpy, scipy, soundfile, pedalboard, librosa, soxr"
+        RESULT_VARIABLE python_dependencies)
+    if(NOT python_dependencies EQUAL 0)
+        message(FATAL_ERROR "Python test dependencies missing. See python/README.md; no packages are installed automatically.")
+    endif()
+    add_test(NAME python.companion COMMAND ${CMAKE_COMMAND} -E env
+        MAM_TEST_BINARY=$<TARGET_FILE:mam>
+        MAM_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/python-cache
+        ${MAM_PYTHON_EXECUTABLE} -I -B -m pytest -q
+        -o cache_dir=${CMAKE_CURRENT_BINARY_DIR}/pytest-cache
+        ${PROJECT_SOURCE_DIR}/python/tests)
+    set_tests_properties(python.companion PROPERTIES TIMEOUT 240 LABELS "python;integration")
+endif()
+
+add_test(NAME vendor.nlohmann_integrity COMMAND ${CMAKE_COMMAND}
+    -DROOT=${PROJECT_SOURCE_DIR}/vendor/nlohmann
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/vendor_integrity.cmake)
+set_tests_properties(vendor.nlohmann_integrity PROPERTIES TIMEOUT 10 LABELS tooling)

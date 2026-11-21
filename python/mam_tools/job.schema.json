@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MAM offline Python job v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "operation", "output_dir"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "operation": {"enum": ["inspect", "compare", "prepare", "effects", "decompose", "chip", "validate", "decode", "export"]},
+    "output_dir": {"type": "string", "minLength": 1},
+    "cache": {"type": "boolean"},
+    "input": {
+      "type": "object", "additionalProperties": false, "required": ["path"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "start_frame": {"type": "integer", "minimum": 0},
+        "frames": {"type": "integer", "minimum": 1}
+      }
+    },
+    "params": {"type": "object"}
+  },
+  "$defs": {
+    "parameters": {
+      "compare": {
+        "type": "object", "additionalProperties": false, "required": ["reference"],
+        "properties": {
+          "reference": {
+            "type": "object", "additionalProperties": false, "required": ["path"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "start_frame": {"type": "integer", "minimum": 0},
+              "frames": {"type": "integer", "minimum": 1}
+            }
+          },
+          "max_abs_error": {"type": "number", "minimum": 0},
+          "fail_on_difference": {"type": "boolean"}
+        }
+      },
+      "inspect": {
+        "type": "object", "additionalProperties": false,
+        "properties": {"loudness": {"type": "boolean"}}
+      },
+      "prepare": {
+        "type": "object", "additionalProperties": false,
+        "properties": {
+          "sample_rate": {"type": "integer", "minimum": 8000, "maximum": 192000},
+          "gain_db": {"type": "number", "minimum": -120, "maximum": 24}
+        }
+      },
+      "effects": {
+        "type": "object", "additionalProperties": false, "required": ["chain"],
+        "properties": {
+          "tail_frames": {"type": "integer", "minimum": 0, "maximum": 1920000},
+          "chain": {
+            "type": "array", "minItems": 1, "maxItems": 32,
+            "items": {
+              "type": "object", "additionalProperties": false, "required": ["type"],
+              "properties": {
+                "type": {"enum": ["Gain", "Compressor", "Limiter", "HighpassFilter", "LowpassFilter", "PeakFilter", "HighShelfFilter", "LowShelfFilter", "Delay", "Reverb", "Chorus", "Distortion", "Bitcrush"]},
+                "params": {"type": "object", "additionalProperties": {"type": ["number", "boolean"]}}
+              }
+            }
+          }
+        }
+      },
+      "decompose": {
+        "type": "object", "additionalProperties": false,
+        "properties": {"margin": {"type": "number", "minimum": 1, "maximum": 10}}
+      },
+      "chip": {
+        "type": "object", "additionalProperties": false, "required": ["frames", "tone", "events"],
+        "properties": {
+          "frames": {"type": "integer", "minimum": 32, "maximum": 2646000},
+          "tone": {"enum": ["bass", "comp", "lead"]},
+          "events": {
+            "type": "array", "maxItems": 10000,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["start_frame", "frames", "midi"],
+              "properties": {
+                "start_frame": {"type": "integer", "minimum": 0},
+                "frames": {"type": "integer", "minimum": 1},
+                "midi": {"type": "number", "minimum": 12, "maximum": 108},
+                "velocity": {"type": "number", "minimum": 0, "maximum": 1},
+                "arp": {"type": "array", "maxItems": 64, "items": {"type": "number", "minimum": -36, "maximum": 36}}
+              }
+            }
+          }
+        }
+      },
+      "validate": {
+        "type": "object", "additionalProperties": false, "required": ["schema"],
+        "properties": {"schema": {"type": "string", "minLength": 1}}
+      },
+      "decode": {
+        "type": "object", "additionalProperties": false,
+        "properties": {"sample_rate": {"type": "integer", "minimum": 8000, "maximum": 192000}}
+      },
+      "export": {
+        "type": "object", "additionalProperties": false,
+        "properties": {"bitrate_kbps": {"enum": [128, 192, 256, 320]}}
+      }
+    }
+  }
+}

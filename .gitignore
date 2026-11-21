@@ -1,0 +1,77 @@
+# Build directories
+build/
+build-*/
+build.bak*/
+
+# macOS
+.DS_Store
+
+# Audio renders
+*.wav
+*.aiff
+*.aif
+*.caf
+*.mp3
+*.m4a
+*.flac
+*.zip
+*.o
+*.a
+*.dylib
+
+# Python companion environments, generated assets and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+dist/
+CMakeUserPresets.json
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+
+
+*.pkf
+
+# Local CMake bundles
+cmake-*-macos-universal/
+cmake-*-macos-universal.tar.gz
+
+# Secrets and credentials; ignore rules do not replace review.
+.env
+.env.*
+!.env.example
+.netrc
+.npmrc
+.pypirc
+credentials.json
+service-account*.json
+id_rsa
+id_ed25519
+id_ecdsa
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.mobileprovision
+
+# Local tools, reports and rendered artifacts
+.tools/
+out/
+output/
+artifacts/
+gitleaks*.json
+*.bundle
+*.tar
+*.gz
+*.7z
+*.ogg
+*.opus
+*.mp4
+*.mov
+*.npy
+*.npz

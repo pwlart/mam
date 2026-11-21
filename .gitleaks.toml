@@ -1,0 +1,3 @@
+# Upstream detection rules, without a baseline that hides existing findings.
+[extend]
+useDefault = true

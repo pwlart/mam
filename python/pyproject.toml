@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mam-tools"
+version = "0.1.0"
+description = "Optional offline analysis and sound prototyping companion for MAM"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [{name = "norockstar / Matthias Thomas Gabriel Amminger", email = "m@pwl.art"}]
+requires-python = ">=3.13,<3.14"
+dependencies = ["numpy==2.5.4", "soundfile==0.14.0", "jsonschema==4.26.0"]
+
+[project.optional-dependencies]
+analysis = ["scipy==1.18.1", "librosa==1.0.0", "soxr==1.1.0", "pyloudnorm==0.2.0"]
+effects = ["pedalboard==0.9.26"]
+voice = ["praat-parselmouth==0.4.7"]
+plots = ["matplotlib==3.11.2"]
+test = ["pytest==9.2.0"]
+
+[project.scripts]
+mam-tools = "mam_tools.cli:main"
+
+[project.urls]
+Homepage = "https://www.pwl.art/"
+Repository = "https://github.com/pwlart/mam"
+Issues = "https://github.com/pwlart/mam/issues"
+
+[tool.setuptools.package-data]
+mam_tools = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

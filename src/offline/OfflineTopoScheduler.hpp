@@ -1,0 +1,505 @@
+#pragma once
+
+#include <vector>
+#include <string>
+#include <cstdint>
+#include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
+#include <atomic>
+#include <memory>
+#include <thread>
+#include <mutex>
+#include <cstdio>
+#include "../core/Graph.hpp"
+#include "BufferPool.hpp"
+#include "OfflineProgress.hpp"
+#include "../core/GraphConfig.hpp"
+#include "../core/Command.hpp"
+#include <cmath>
+#include "../core/DelayNode.hpp"
+#include "../core/CompressorNode.hpp"
+#include "../core/MeterNode.hpp"
+#include "../core/JobPool.hpp"
+
+// Scaffold: A minimal topological scheduler for offline rendering.
+// Current Graph has no explicit edges; this placeholder processes nodes then applies mixer.
+class OfflineTopoScheduler {
+public:
+  explicit OfflineTopoScheduler(uint32_t channels) : pool_(channels), channels_(channels) {}
+
+  void setChannels(uint32_t channels) { channels_ = channels; pool_.setChannels(channels); }
+  void setDebug(bool on) { debug_ = on; }
+  void setBlockSize(uint32_t bs) { blockSize_ = (bs >= 64u) ? bs : 64u; }
+  void setParallelism(uint32_t threads, uint32_t minWidth = 2u) { threads_ = threads; minWidth_ = (minWidth > 0 ? minWidth : 2u); }
+  void setParallelHeuristics(uint32_t minWidth, uint32_t minSegFrames) { minWidth_ = (minWidth > 0 ? minWidth : 2u); minSegFrames_ = (minSegFrames > 0 ? minSegFrames : 1u); }
+
+  void enableCpuStats(bool on) {
+    cpuStatsEnabled_ = on;
+    if (on) {
+      cpuNsSum_ = 0.0L; cpuNsMax_ = 0.0; cpuPctSum_ = 0.0; cpuPctMax_ = 0.0; cpuBlocks_ = 0; cpuOverruns_ = 0;
+      nodeNsSum_.assign(ids_.size(), 0.0L);
+      nodeNsMax_.assign(ids_.size(), 0.0);
+      nodeCalls_.assign(ids_.size(), 0u);
+    }
+  }
+
+  void enableTrace(const char* path) {
+    if (path && *path) { traceEnabled_ = true; tracePath_ = path; trace_.clear(); traceEpoch_ = std::chrono::steady_clock::time_point{}; }
+  }
+  void flushTrace() {
+    if (!traceEnabled_ || tracePath_.empty()) return;
+    FILE* f = std::fopen(tracePath_.c_str(), "wb");
+    if (!f) return;
+    std::fprintf(f, "{\n  \"traceEvents\": [\n");
+    for (size_t i = 0; i < trace_.size(); ++i) {
+      const auto& e = trace_[i];
+      std::fprintf(f,
+        "    {\"name\":\"%s\",\"ph\":\"X\",\"ts\":%.3f,\"dur\":%.3f,\"pid\":1,\"tid\":1}%s\n",
+        e.name.c_str(), e.ts_us, e.dur_us, (i + 1 < trace_.size()) ? "," : "");
+    }
+    std::fprintf(f, "  ]\n}\n");
+    std::fclose(f);
+  }
+
+  // Render 'frames' samples into interleaved output, using fixed blockSize.
+  void render(Graph& graph,
+              const std::vector<GraphSpec::Connection>& connections,
+              const std::vector<GraphSpec::CommandSpec>& cmds,
+              uint32_t sampleRate,
+              uint32_t channels,
+              uint64_t frames,
+              std::vector<float>& out) {
+    const uint32_t blockSize = blockSize_;
+    graph.prepare(sampleRate, blockSize);
+    graph.reset();
+    out.assign(static_cast<size_t>(frames * channels), 0.0f);
+
+    // Timeline-like segmented processing with command delivery, using graph.process for mixing/topology.
+    std::vector<GraphSpec::CommandSpec> commands = cmds;
+    std::sort(commands.begin(), commands.end(), [](const auto& a, const auto& b){ return a.sampleTime < b.sampleTime; });
+
+    const auto tStart = std::chrono::steady_clock::now();
+    // Ensure deterministic edge order before any processing by sorting connections
+    if (!stableConnsApplied_) {
+      std::vector<GraphSpec::Connection> sorted = connections;
+      std::sort(sorted.begin(), sorted.end(), [](const GraphSpec::Connection& a, const GraphSpec::Connection& b){
+        if (a.to != b.to) return a.to < b.to;
+        if (a.from != b.from) return a.from < b.from;
+        if (a.toPort != b.toPort) return a.toPort < b.toPort;
+        return a.fromPort < b.fromPort;
+      });
+      graph.setConnections(sorted);
+      stableConnsApplied_ = true;
+    }
+    // Build topo levels once for diagnostics (serial execution for now)
+    if (!levelsBuilt_) {
+      buildLevels(graph, connections);
+      if (debug_) printLevels(graph);
+      levelsBuilt_ = true;
+    }
+    size_t cmdIndex = 0;
+    // Prepare ID→index for quick lookups
+    idToIdx_.clear(); ids_.clear(); graph.forEachNode([&](const std::string& id, Node&){ idToIdx_[id] = ids_.size(); ids_.push_back(id); });
+
+    // Copy sorted connections for dry taps and isSink computation
+    if (stableConns_.empty()) { stableConns_ = connections; }
+    // Compute sink flags from connections (nodes with no outgoing edges)
+    isSink_.assign(graph.nodeCount(), true);
+    for (const auto& e : stableConns_) {
+      auto itF = idToIdx_.find(e.from);
+      if (itF != idToIdx_.end()) isSink_[itF->second] = false;
+    }
+
+    for (uint64_t f = 0; f < frames; f += blockSize) {
+      const uint32_t thisBlock = static_cast<uint32_t>(std::min<uint64_t>(blockSize, frames - f));
+      const uint64_t blockStart = f;
+      const uint64_t cutoff = f + thisBlock;
+
+      std::vector<uint32_t> splits; splits.reserve(8);
+      splits.push_back(0);
+      size_t idx = cmdIndex;
+      while (idx < commands.size() && commands[idx].sampleTime < cutoff) {
+        if (commands[idx].sampleTime >= blockStart) splits.push_back(static_cast<uint32_t>(commands[idx].sampleTime - blockStart));
+        ++idx;
+      }
+      splits.push_back(thisBlock);
+      std::sort(splits.begin(), splits.end());
+      splits.erase(std::unique(splits.begin(), splits.end()), splits.end());
+
+      for (size_t si = 0; si + 1 < splits.size(); ++si) {
+        const uint32_t segStart = splits[si];
+        const uint32_t segEnd   = splits[si + 1];
+        const uint32_t segFrames = segEnd - segStart;
+        if (segFrames == 0) continue;
+        const uint64_t segAbs = blockStart + segStart;
+
+        size_t di = cmdIndex;
+        while (di < commands.size() && commands[di].sampleTime < segAbs) ++di;
+        // SetParam / SetParamRamp first
+        for (size_t dj = di; dj < commands.size() && commands[dj].sampleTime == segAbs; ++dj) {
+          if (commands[dj].type != std::string("SetParam") && commands[dj].type != std::string("SetParamRamp")) continue;
+          Command c{}; c.sampleTime = segAbs; c.nodeId = commands[dj].nodeId.c_str();
+          c.type = (commands[dj].type == std::string("SetParam")) ? CommandType::SetParam : CommandType::SetParamRamp;
+          c.paramId = commands[dj].paramId; c.value = commands[dj].value; c.rampMs = commands[dj].rampMs;
+          graph.forEachNode([&](const std::string& id, Node& n){ if (c.nodeId && id == c.nodeId) n.handleEvent(c); });
+        }
+        // Triggers
+        for (size_t dj = di; dj < commands.size() && commands[dj].sampleTime == segAbs; ++dj) {
+          if (commands[dj].type != std::string("Trigger")) continue;
+          Command c{}; c.sampleTime = segAbs; c.nodeId = commands[dj].nodeId.c_str(); c.type = CommandType::Trigger; c.paramId = 0; c.value = commands[dj].value; c.rampMs = 0.0f;
+          graph.forEachNode([&](const std::string& id, Node& n){ if (c.nodeId && id == c.nodeId) n.handleEvent(c); });
+        }
+
+        // Execute by topo levels with explicit per-edge accumulation and BufferPool reuse
+        if (traceEnabled_ && traceEpoch_ == std::chrono::steady_clock::time_point{}) traceEpoch_ = std::chrono::steady_clock::now();
+        const auto tBlockStart = cpuStatsEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        graph.ensureTopology();
+        const size_t totalSamples = static_cast<size_t>(segFrames) * channels;
+        if (nodeBuffers_.size() != graph.nodeCount()) nodeBuffers_.assign(graph.nodeCount(), static_cast<float*>(nullptr));
+        if (nodeVectors_.size() != graph.nodeCount()) nodeVectors_.assign(graph.nodeCount(), std::vector<float>());
+        if (lifetimeIds_.size() != graph.nodeCount()) lifetimeIds_.assign(graph.nodeCount(), 0ull);
+        // Remaining downstream uses per node (for early release); sinks are retained for final mix
+        std::vector<uint32_t> remain;
+        remain.assign(graph.nodeCount(), 0u);
+        for (const auto& e : stableConns_) {
+          auto itF2 = idToIdx_.find(e.from);
+          auto itT2 = idToIdx_.find(e.to);
+          if (itF2 != idToIdx_.end() && itT2 != idToIdx_.end()) remain[itF2->second]++;
+        }
+        // Per-port sums for current node
+        std::unordered_map<uint32_t, std::vector<float>> portSums;
+
+        // Iterate levels
+        for (const auto& level : levels_) {
+          if (threads_ > 1 && level.size() >= minWidth_ && segFrames >= minSegFrames_) {
+            uint32_t useThreads = threads_;
+            if (level.size() < useThreads) useThreads = static_cast<uint32_t>(level.size());
+            if (!jobPool_ || jobPoolThreads_ != useThreads) { jobPool_ = std::make_unique<JobPool>(useThreads); jobPoolThreads_ = useThreads; }
+            std::atomic<uint32_t> done{0};
+            const uint32_t need = static_cast<uint32_t>(level.size());
+            const auto tBarrierStart = cpuStatsEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+            for (size_t ni : level) {
+              jobPool_->submit([&, ni]() {
+                // Build per-port sums from upstream edges (local)
+                std::unordered_map<uint32_t, std::vector<float>> lportSums;
+                std::vector<Graph::EdgeInfo> ups; graph.getUpstreamEdgeInfos(ni, ups);
+                for (const auto& e : ups) {
+                  const float* src = nodeBuffers_[e.fromIndex]; if (!src) continue;
+                  auto& dst = lportSums[e.toPort]; if (dst.size() != totalSamples) dst.assign(totalSamples, 0.0f);
+                  const uint32_t srcDecl = graph.getDeclaredOutChannels(e.fromIndex, e.fromPort);
+                  const uint32_t dstDecl = graph.getDeclaredInChannels(ni, e.toPort);
+                  graph.accumulateEdge(src, dst, segFrames, channels, srcDecl, dstDecl, e.gain);
+                }
+                // Ensure output buffer for this node
+                if (!nodeBuffers_[ni]) {
+                  auto& vec = nodeVectors_[ni];
+                  if (vec.size() != totalSamples) vec.assign(totalSamples, 0.0f); else std::fill(vec.begin(), vec.end(), 0.0f);
+                  nodeBuffers_[ni] = vec.data();
+                }
+                const float* mainIn2 = (lportSums.count(0u) ? lportSums[0u].data() : nullptr);
+                Node* node2 = graph.nodeAt(ni);
+                const auto tNodeStart = cpuStatsEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                if (auto* d2 = dynamic_cast<DelayNode*>(node2)) {
+                  if (mainIn2) std::copy(lportSums[0u].begin(), lportSums[0u].end(), nodeBuffers_[ni]);
+                  ProcessContext ctx2{}; ctx2.sampleRate = sampleRate; ctx2.frames = segFrames; ctx2.blockStart = segAbs;
+                  d2->processInPlace(ctx2, nodeBuffers_[ni], channels);
+                } else if (auto* c2 = dynamic_cast<CompressorNode*>(node2)) {
+                  if (mainIn2) std::copy(lportSums[0u].begin(), lportSums[0u].end(), nodeBuffers_[ni]);
+                  std::vector<float> sc2; sc2.assign(totalSamples, 0.0f);
+                  auto itSC2 = lportSums.find(1u); if (itSC2 != lportSums.end()) sc2 = itSC2->second;
+                  ProcessContext ctx2{}; ctx2.sampleRate = sampleRate; ctx2.frames = segFrames; ctx2.blockStart = segAbs;
+                  c2->applySidechain(ctx2, nodeBuffers_[ni], sc2.data(), channels);
+                } else if (auto* m2 = dynamic_cast<MeterNode*>(node2)) {
+                  if (mainIn2) std::copy(lportSums[0u].begin(), lportSums[0u].end(), nodeBuffers_[ni]);
+                  ProcessContext ctx2{}; ctx2.sampleRate = sampleRate; ctx2.frames = segFrames; ctx2.blockStart = segAbs;
+                  m2->updateFromBuffer(nodeBuffers_[ni], segFrames, channels);
+                } else {
+                  ProcessContext ctx2{}; ctx2.sampleRate = sampleRate; ctx2.frames = segFrames; ctx2.blockStart = segAbs;
+                  node2->process(ctx2, nodeBuffers_[ni], channels);
+                }
+                if (cpuStatsEnabled_) {
+                  const auto tNodeEnd = std::chrono::steady_clock::now();
+                  const double ns = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(tNodeEnd - tNodeStart).count());
+                  std::lock_guard<std::mutex> lk(statsMu_);
+                  if (ni >= nodeNsSum_.size()) { nodeNsSum_.resize(ni + 1, 0.0L); nodeNsMax_.resize(ni + 1, 0.0); nodeCalls_.resize(ni + 1, 0u); }
+                  nodeNsSum_[ni] += static_cast<long double>(ns);
+                  if (ns > nodeNsMax_[ni]) nodeNsMax_[ni] = ns;
+                  nodeCalls_[ni] += 1u;
+                }
+                done.fetch_add(1, std::memory_order_release);
+              });
+            }
+            // Spin-wait barrier (render thread only); short levels
+            while (done.load(std::memory_order_acquire) < need) std::this_thread::yield();
+            if (cpuStatsEnabled_) {
+              const auto tBarrierEnd = std::chrono::steady_clock::now();
+              const double ns = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(tBarrierEnd - tBarrierStart).count());
+              std::lock_guard<std::mutex> lk(statsMu_);
+              barrierNsSum_ += static_cast<long double>(ns);
+              if (ns > barrierNsMax_) barrierNsMax_ = ns;
+              barrierCount_ += 1u;
+              parallelLevels_ += 1u;
+            }
+            if (traceEnabled_) {
+              const auto tBarrierEnd = std::chrono::steady_clock::now();
+              const double ns = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(tBarrierEnd - tBarrierStart).count());
+              const double ts_us = static_cast<double>(
+                std::chrono::duration_cast<std::chrono::microseconds>(tBarrierStart - traceEpoch_).count());
+              const double dur_us = ns / 1000.0;
+              std::lock_guard<std::mutex> lk(statsMu_);
+              trace_.push_back(TraceEvt{"barrier", ts_us, dur_us});
+            }
+          } else {
+            for (size_t ni : level) {
+            // Build per-port sums from upstream edges
+            portSums.clear();
+            std::vector<Graph::EdgeInfo> ups; graph.getUpstreamEdgeInfos(ni, ups);
+            for (const auto& e : ups) {
+              const float* src = nodeBuffers_[e.fromIndex];
+              auto& dst = portSums[e.toPort]; if (dst.size() != totalSamples) dst.assign(totalSamples, 0.0f);
+              const uint32_t srcDecl = graph.getDeclaredOutChannels(e.fromIndex, e.fromPort);
+              const uint32_t dstDecl = graph.getDeclaredInChannels(ni, e.toPort);
+              graph.accumulateEdge(src, dst, segFrames, channels, srcDecl, dstDecl, e.gain);
+              // One downstream consumption for 'from' is satisfied
+              if (remain[e.fromIndex] > 0) {
+                remain[e.fromIndex]--;
+                const bool isSink = (!isSink_.empty() && isSink_[e.fromIndex]);
+                const bool inMixer = (graph.mixerGainForId(graph.nodeIdAt(e.fromIndex)) > 0.0f);
+                if (remain[e.fromIndex] == 0 && !isSink && !inMixer) {
+                  if (debug_) std::fprintf(stderr, "[offline-topo] release early node=%s ptr=%p\n", graph.nodeIdAt(e.fromIndex).c_str(), (void*)nodeBuffers_[e.fromIndex]);
+                  pool_.releaseById(lifetimeIds_[e.fromIndex]);
+                  nodeBuffers_[e.fromIndex] = nullptr;
+                }
+              }
+            }
+            // Determine main input (port 0)
+            const float* mainIn = nullptr; if (portSums.count(0u)) mainIn = portSums[0u].data();
+            // Process node
+            Node* node = graph.nodeAt(ni);
+            // Ensure output buffer for this node
+            if (!nodeBuffers_[ni]) {
+              const uint64_t lifeId = ((static_cast<uint64_t>(segAbs) << 32) ^ static_cast<uint64_t>(ni));
+              lifetimeIds_[ni] = lifeId;
+              auto& buf = pool_.acquire(segFrames, lifeId);
+              nodeBuffers_[ni] = buf.data();
+              std::fill(nodeBuffers_[ni], nodeBuffers_[ni] + totalSamples, 0.0f);
+              if (debug_) std::fprintf(stderr, "[offline-topo] buf node=%s ptr=%p\n", graph.nodeIdAt(ni).c_str(), (void*)nodeBuffers_[ni]);
+            }
+            const auto tNodeStart = cpuStatsEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+            if (auto* d = dynamic_cast<DelayNode*>(node)) {
+              // in-place over input
+              if (mainIn) std::copy(portSums[0u].begin(), portSums[0u].end(), nodeBuffers_[ni]);
+              ProcessContext ctx{}; ctx.sampleRate = sampleRate; ctx.frames = segFrames; ctx.blockStart = segAbs;
+              d->processInPlace(ctx, nodeBuffers_[ni], channels);
+            } else if (auto* c = dynamic_cast<CompressorNode*>(node)) {
+              if (mainIn) std::copy(portSums[0u].begin(), portSums[0u].end(), nodeBuffers_[ni]);
+              std::vector<float> sc; sc.assign(totalSamples, 0.0f);
+              auto itSC = portSums.find(1u); if (itSC != portSums.end()) sc = itSC->second;
+              ProcessContext ctx{}; ctx.sampleRate = sampleRate; ctx.frames = segFrames; ctx.blockStart = segAbs;
+              c->applySidechain(ctx, nodeBuffers_[ni], sc.data(), channels);
+            } else if (auto* m = dynamic_cast<MeterNode*>(node)) {
+              if (mainIn) std::copy(portSums[0u].begin(), portSums[0u].end(), nodeBuffers_[ni]);
+              ProcessContext ctx{}; ctx.sampleRate = sampleRate; ctx.frames = segFrames; ctx.blockStart = segAbs;
+              m->updateFromBuffer(nodeBuffers_[ni], segFrames, channels);
+            } else {
+              // Generators or nodes that ignore inputs
+              ProcessContext ctx{}; ctx.sampleRate = sampleRate; ctx.frames = segFrames; ctx.blockStart = segAbs;
+              node->process(ctx, nodeBuffers_[ni], channels);
+            }
+            if (cpuStatsEnabled_) {
+              const auto tNodeEnd = std::chrono::steady_clock::now();
+              const double ns = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(tNodeEnd - tNodeStart).count());
+              if (ni >= nodeNsSum_.size()) { nodeNsSum_.resize(ni + 1, 0.0L); nodeNsMax_.resize(ni + 1, 0.0); nodeCalls_.resize(ni + 1, 0u); }
+              nodeNsSum_[ni] += static_cast<long double>(ns);
+              if (ns > nodeNsMax_[ni]) nodeNsMax_[ni] = ns;
+              nodeCalls_[ni] += 1u;
+            }
+            if (traceEnabled_) {
+              const auto tNodeEnd = std::chrono::steady_clock::now();
+              const double ns = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(tNodeEnd - tNodeStart).count());
+              const double ts_us = static_cast<double>(
+                std::chrono::duration_cast<std::chrono::microseconds>(tNodeStart - traceEpoch_).count());
+              const double dur_us = ns / 1000.0;
+              trace_.push_back(TraceEvt{graph.nodeIdAt(ni), ts_us, dur_us});
+            }
+            }
+          }
+        }
+
+        // Mix to output with dry taps and mixer gains; stable connection order
+        float* outPtr = out.data() + static_cast<size_t>((blockStart + segStart) * channels);
+        std::fill(outPtr, outPtr + totalSamples, 0.0f);
+        for (const auto& e : stableConns_) {
+          // dry tap suppression if present in mixer
+          const size_t fromIdx = idToIdx_.count(e.from) ? idToIdx_[e.from] : static_cast<size_t>(-1);
+          if (fromIdx == static_cast<size_t>(-1)) continue;
+          const float dry = e.dryPercent * (1.0f/100.0f);
+          if (dry <= 0.0f) continue;
+          if (graph.mixerGainForId(e.from) > 0.0f) continue;
+          const float* src = nodeBuffers_[fromIdx]; if (!src) continue;
+          for (size_t i = 0; i < totalSamples; ++i) outPtr[i] += src[i] * dry;
+        }
+        for (size_t mi = 0; mi < graph.nodeCount(); ++mi) {
+          float gain = graph.mixerGainForId(graph.nodeIdAt(mi));
+          if (gain == 0.0f && (isSink_.size()==graph.nodeCount() ? isSink_[mi] : true)) gain = 1.0f;
+          if (gain == 0.0f) continue;
+          const float* src = nodeBuffers_[mi]; if (!src) continue;
+          for (size_t i = 0; i < totalSamples; ++i) outPtr[i] += src[i] * gain;
+        }
+        if (graph.hasMixer()) {
+          const float master = graph.mixerMasterGain();
+          if (master != 1.0f) for (size_t i=0;i<totalSamples;++i) outPtr[i] *= master;
+          if (graph.mixerSoftClipEnabled()) {
+            for (size_t i=0;i<totalSamples;++i) outPtr[i] = std::tanh(outPtr[i]);
+          }
+        }
+
+        // Release node buffers (eligible for reuse next segment)
+        for (size_t i = 0; i < graph.nodeCount(); ++i) {
+          pool_.releaseById(lifetimeIds_[i]);
+          nodeBuffers_[i] = nullptr;
+          lifetimeIds_[i] = 0ull;
+        }
+        pool_.releaseAll();
+        if (cpuStatsEnabled_) {
+          const auto tBlockEnd = std::chrono::steady_clock::now();
+          const double ns = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(tBlockEnd - tBlockStart).count());
+          const double budgetNs = (sampleRate > 0u) ? (1e9 * static_cast<double>(segFrames) / static_cast<double>(sampleRate)) : 0.0;
+          const double pct = (budgetNs > 0.0) ? (ns / budgetNs * 100.0) : 0.0;
+          cpuNsSum_ += static_cast<long double>(ns);
+          if (ns > cpuNsMax_) cpuNsMax_ = ns;
+          cpuPctSum_ += pct;
+          if (pct > cpuPctMax_) cpuPctMax_ = pct;
+          cpuBlocks_ += 1u;
+          if (budgetNs > 0.0 && ns > budgetNs) cpuOverruns_ += 1u;
+        }
+      }
+      while (cmdIndex < commands.size() && commands[cmdIndex].sampleTime < cutoff) ++cmdIndex;
+
+      if (gOfflineProgressEnabled && gOfflineProgressMs > 0) {
+        static auto last = tStart; const auto now = std::chrono::steady_clock::now();
+        const auto msSince = std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count();
+        if (msSince >= gOfflineProgressMs) {
+          const double frac = static_cast<double>(std::min<uint64_t>(f + blockSize, frames)) / static_cast<double>(frames);
+          std::fprintf(stderr, "[offline-topo] %3.0f%%\r", frac * 100.0);
+          last = now;
+        }
+      }
+    }
+  }
+
+private:
+  void buildLevels(Graph& graph, const std::vector<GraphSpec::Connection>& connections) {
+    ids_.clear(); idToIdx_.clear();
+    graph.forEachNode([&](const std::string& id, Node&){ idToIdx_[id] = ids_.size(); ids_.push_back(id); });
+    const size_t n = ids_.size();
+    std::vector<int> indeg(n, 0);
+    std::unordered_multimap<size_t,size_t> adj;
+    for (const auto& e : connections) {
+      auto itF = idToIdx_.find(e.from), itT = idToIdx_.find(e.to);
+      if (itF == idToIdx_.end() || itT == idToIdx_.end()) continue;
+      indeg[itT->second]++;
+      adj.emplace(itF->second, itT->second);
+    }
+    // Kahn levels
+    levels_.clear();
+    std::vector<size_t> frontier;
+    for (size_t i=0;i<n;++i) if (indeg[i]==0) frontier.push_back(i);
+    std::vector<int> indegWork = indeg;
+    std::unordered_set<size_t> seen;
+    while (!frontier.empty()) {
+      levels_.push_back(frontier);
+      std::vector<size_t> next;
+      for (size_t u : frontier) {
+        seen.insert(u);
+        auto range = adj.equal_range(u);
+        for (auto it = range.first; it != range.second; ++it) {
+          size_t v = it->second;
+          if (--indegWork[v] == 0) next.push_back(v);
+        }
+      }
+      // Deduplicate next
+      std::sort(next.begin(), next.end()); next.erase(std::unique(next.begin(), next.end()), next.end());
+      frontier = std::move(next);
+    }
+    // If cycle or disconnected, place remaining nodes in a final level in insertion order
+    if (seen.size() < n) {
+      std::vector<size_t> rem;
+      rem.reserve(n - seen.size());
+      for (size_t i=0;i<n;++i) if (!seen.count(i)) rem.push_back(i);
+      if (!rem.empty()) levels_.push_back(std::move(rem));
+    }
+  }
+
+  void printLevels(Graph& graph) const {
+    (void)graph;
+    std::fprintf(stderr, "[offline-topo] levels=%zu\n", levels_.size());
+    for (size_t li = 0; li < levels_.size(); ++li) {
+      std::fprintf(stderr, "  level %zu:", li);
+      for (size_t idx : levels_[li]) {
+        const std::string& id = ids_[idx];
+        std::fprintf(stderr, " %s", id.c_str());
+      }
+      std::fprintf(stderr, "\n");
+    }
+  }
+
+private:
+  bool debug_ = false;
+  bool levelsBuilt_ = false;
+  bool stableConnsApplied_ = false;
+  bool cpuStatsEnabled_ = false;
+  bool traceEnabled_ = false;
+  std::string tracePath_;
+  std::vector<std::string> ids_;
+  std::unordered_map<std::string,size_t> idToIdx_;
+  std::vector<std::vector<size_t>> levels_;
+  BufferPool pool_;
+  uint32_t channels_ = 2;
+  uint32_t blockSize_ = 1024;
+  std::vector<float*> nodeBuffers_{};
+  std::vector<std::vector<float>> nodeVectors_{}; // used in parallel path to avoid BufferPool races
+  std::vector<bool> isSink_{};
+  std::vector<GraphSpec::Connection> stableConns_{};
+  uint32_t threads_ = 0;
+  uint32_t minWidth_ = 2;
+  uint32_t minSegFrames_ = 128; // skip parallelism for tiny splits
+  std::unique_ptr<JobPool> jobPool_{};
+  uint32_t jobPoolThreads_ = 0;
+  std::vector<uint64_t> lifetimeIds_{};
+
+  // CPU stats
+  long double cpuNsSum_ = 0.0L; double cpuNsMax_ = 0.0; double cpuPctSum_ = 0.0; double cpuPctMax_ = 0.0; uint64_t cpuBlocks_ = 0; uint64_t cpuOverruns_ = 0;
+  std::vector<long double> nodeNsSum_{}; std::vector<double> nodeNsMax_{}; std::vector<uint64_t> nodeCalls_{};
+  // Parallel instrumentation
+  std::mutex statsMu_;
+  long double barrierNsSum_ = 0.0L; double barrierNsMax_ = 0.0; uint64_t barrierCount_ = 0; uint64_t parallelLevels_ = 0;
+  // Trace
+  struct TraceEvt { std::string name; double ts_us; double dur_us; };
+  std::vector<TraceEvt> trace_{};
+  std::chrono::steady_clock::time_point traceEpoch_{};
+
+public:
+  struct CpuSummary {
+    double avgMs; double maxMs; double avgPercent; double maxPercent; uint64_t blocks; uint64_t overruns;
+    double barrierAvgMs; double barrierMaxMs; uint64_t barrierCount; uint64_t parallelLevels;
+  };
+  CpuSummary getCpuSummary() const {
+    const double avgNs = (cpuBlocks_ > 0) ? static_cast<double>(cpuNsSum_ / static_cast<long double>(cpuBlocks_)) : 0.0;
+    const double avgPct = (cpuBlocks_ > 0) ? (cpuPctSum_ / static_cast<double>(cpuBlocks_)) : 0.0;
+    const double barrAvgNs = (barrierCount_ > 0) ? static_cast<double>(barrierNsSum_ / static_cast<long double>(barrierCount_)) : 0.0;
+    return CpuSummary{ avgNs / 1e6, cpuNsMax_ / 1e6, avgPct, cpuPctMax_, cpuBlocks_, cpuOverruns_, barrAvgNs / 1e6, barrierNsMax_ / 1e6, barrierCount_, parallelLevels_ };
+  }
+  struct NodeCpu { std::string id; double avgUs; double maxUs; };
+  std::vector<NodeCpu> getPerNodeCpu() const {
+    std::vector<NodeCpu> v; v.reserve(ids_.size());
+    for (size_t i = 0; i < ids_.size(); ++i) {
+      const double avgNs = (nodeCalls_.size() > i && nodeCalls_[i] > 0)
+        ? static_cast<double>(nodeNsSum_[i] / static_cast<long double>(nodeCalls_[i])) : 0.0;
+      const double maxNs = (nodeNsMax_.size() > i) ? nodeNsMax_[i] : 0.0;
+      v.push_back(NodeCpu{ids_[i], avgNs / 1e3, maxNs / 1e3});
+    }
+    return v;
+  }
+};

@@ -1,0 +1,177 @@
+{
+  "kind": "rack",
+  "version": 1,
+  "description": "DigitalMania native pulse: an E-minor adaptation using only MAM synthesis; no source recording.",
+  "sampleRate": 44100,
+  "channels": 2,
+  "nodes": [
+    {
+      "id": "pulse",
+      "type": "tb303_ext",
+      "params": {
+        "waveform": 0,
+        "tune": 0,
+        "glideMs": 22,
+        "cutoff": 1100,
+        "resonance": 0.38,
+        "envMod": 0.42,
+        "decay": 160,
+        "ampDecayMs": 160,
+        "gain": 0.45
+      },
+      "mod": {
+        "lfos": [
+          {
+            "id": 1,
+            "wave": "sine",
+            "freqHz": 0.08411458333333334,
+            "phase": 0
+          }
+        ],
+        "routes": [
+          {
+            "sourceId": 1,
+            "destParam": "CUTOFF_HZ",
+            "min": 350,
+            "max": 2100,
+            "map": "exp"
+          }
+        ]
+      }
+    },
+    {
+      "id": "kick",
+      "type": "kick",
+      "params": {
+        "f0": 120,
+        "fend": 45,
+        "pitchDecayMs": 45,
+        "ampDecayMs": 150,
+        "gain": 0.55
+      }
+    }
+  ],
+  "mixer": {
+    "masterPercent": 55,
+    "softClip": true,
+    "inputs": [
+      {
+        "id": "pulse",
+        "gainPercent": 65
+      },
+      {
+        "id": "kick",
+        "gainPercent": 85
+      }
+    ]
+  },
+  "transport": {
+    "bpm": 161.5,
+    "lengthBars": 4,
+    "resolution": 16,
+    "patterns": [
+      {
+        "nodeId": "pulse",
+        "stepsBars": [
+          "x.x.x.x.x.x.x.x.",
+          "x.x.x.x.x.x.x.x.",
+          "x.x.x.x.x.x.x.x.",
+          "x.x.x.x.x.x.x.x."
+        ],
+        "locks": [
+          {
+            "step": 0,
+            "param": "NOTE_SEMITONES",
+            "value": 40
+          },
+          {
+            "step": 0,
+            "param": "VELOCITY",
+            "value": 0.85
+          },
+          {
+            "step": 2,
+            "param": "NOTE_SEMITONES",
+            "value": 43
+          },
+          {
+            "step": 2,
+            "param": "VELOCITY",
+            "value": 0.65
+          },
+          {
+            "step": 4,
+            "param": "NOTE_SEMITONES",
+            "value": 47
+          },
+          {
+            "step": 4,
+            "param": "VELOCITY",
+            "value": 0.65
+          },
+          {
+            "step": 6,
+            "param": "NOTE_SEMITONES",
+            "value": 50
+          },
+          {
+            "step": 6,
+            "param": "VELOCITY",
+            "value": 0.65
+          },
+          {
+            "step": 8,
+            "param": "NOTE_SEMITONES",
+            "value": 52
+          },
+          {
+            "step": 8,
+            "param": "VELOCITY",
+            "value": 0.85
+          },
+          {
+            "step": 10,
+            "param": "NOTE_SEMITONES",
+            "value": 47
+          },
+          {
+            "step": 10,
+            "param": "VELOCITY",
+            "value": 0.65
+          },
+          {
+            "step": 12,
+            "param": "NOTE_SEMITONES",
+            "value": 43
+          },
+          {
+            "step": 12,
+            "param": "VELOCITY",
+            "value": 0.65
+          },
+          {
+            "step": 14,
+            "param": "NOTE_SEMITONES",
+            "value": 40
+          },
+          {
+            "step": 14,
+            "param": "VELOCITY",
+            "value": 0.65
+          }
+        ]
+      },
+      {
+        "nodeId": "kick",
+        "stepsBars": [
+          "x...x...x...x...",
+          "x...x...x...x...",
+          "x...x...x...x...",
+          "x...x...x...x..x"
+        ]
+      }
+    ]
+  },
+  "connections": [],
+  "commands": []
+}

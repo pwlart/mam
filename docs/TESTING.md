@@ -1,0 +1,144 @@
+# Local C++20 build and regression tests
+
+From the `mam` directory:
+
+```sh
+cmake --preset default
+cmake --build --preset default --parallel
+ctest --preset default --output-on-failure
+```
+
+Requires macOS, a C++20 compiler/SDK, CMake 3.21+ and Ninja. Verified on
+20 November 2026 with Apple Clang 21.0.0, CMake 4.3.3 and Ninja 1.13.2,
+Apple Silicon. No package download, Python, account, audio device or source
+recording is required to build and run these tests. The test framework is
+doctest 2.5.3 in `vendor/doctest`; CTest discovers individual C++ test cases.
+
+| Preset | Directory | Purpose |
+| --- | --- | --- |
+| `default` | `build/default` | Optimized debug information, warnings as errors, tests |
+| `asan` | `build/asan` | Debug + AddressSanitizer, tests |
+| `ubsan` | `build/ubsan` | Debug + UndefinedBehaviorSanitizer, fail on first finding |
+| `release` | `build/release` | Release + checked LTO support, tests disabled |
+| `python` | `build/python` | Native suite plus optional Python worker/integration tests |
+| `debug` | `build/debug` | Assertions enabled, no sanitizer |
+| `tsan` | `build/tsan` | ThreadSanitizer; separate from ASan/UBSan/LTO |
+
+```sh
+cmake --preset asan
+cmake --build --preset asan --parallel
+ctest --preset asan --output-on-failure
+
+cmake --preset ubsan
+cmake --build --preset ubsan --parallel
+ctest --preset ubsan --output-on-failure
+
+cmake --preset release
+cmake --build --preset release --parallel
+```
+
+Sanitizer compile/link options reach the libraries, CLI, tests and parameter
+documentation generator. `BUILD_TESTING=OFF` excludes doctest entirely.
+Normal builds do not modify tracked documentation. To generate parameter
+tables, run `cmake --build --preset default --target docs`; review
+`build/default/docs/ParamTables.md` before updating the tracked document.
+
+## What the suite checks
+
+The 0.1.0 suite has 38 native CTest cases: 24 doctest units and 14
+integration/tooling checks. The optional `python` preset adds one CTest entry
+running 69 worker, DSP and DigitalMania pytest cases:
+
+```sh
+cmake --preset python
+cmake --build --preset python --parallel
+ctest --preset python --output-on-failure
+```
+
+The native reader tests exact seeks, partial/chunk boundaries, invalid files,
+nonfinite output and overwrite refusal. Python integration covers native frame
+placement, fades, overlap, PCM conversion, subprocess timeouts and processed
+stem parity. See [the companion guide](../python/README.md) for environment
+configuration. To run these integration cases against an instrumented MAM,
+configure `asan` or `ubsan` with `-DMAM_ENABLE_PYTHON_TESTS=ON` before building.
+
+- Parameter ramps finish on the intended sample; retargeting, immediate,
+  exponential and capacity cases keep their defined behavior.
+- Command queues preserve block cutoffs, wraparound and event order, including
+  100,000 events sent by a separate producer thread. Head publication now
+  uses release/acquire synchronization; this is not a full realtime race audit.
+- Kick synthesis stays finite, decays, responds to velocity and resets
+  reproducibly. Meter and SHA1 results have independent known answers.
+- Transport locks precede same-sample triggers; exact 48 kHz beat positions,
+  swing and tempo transitions are checked. Fractional-step timing at 44.1 kHz
+  remains a documented migration issue, not a passing accuracy claim.
+- Float32 WAV samples and channel order round-trip exactly over multiple
+  65,536-frame write chunks; integer exports stay within one LSB. Malformed
+  inputs fail before file creation. An existing destination survives unchanged.
+- Real two-second acid/sidechain racks match across baseline, serial topology
+  and four-thread topology renderers at both 44.1 and 48 kHz, including tails.
+- The parity script rejects missing, malformed, duplicate and mismatched hashes,
+  failed render processes and missing audio files. A positive control verifies
+  it can also succeed. The old stdout-only parser falsely accepted empty hashes.
+- Strict schema requests fail explicitly, and vendored files match SHA256
+  provenance. The old no-op schema shim has been removed; native validation is still unavailable.
+- Build identity changes after a commit without reconfiguration, reports dirty
+  state, remains stable when unchanged and reports unknown for exported trees
+  rather than borrowing a parent repository's revision. The CLI emits pure JSON.
+
+Build identity fixture tests use local Git repositories in the build directory;
+Git must be available for those tests. They do not change project history.
+For concurrency changes:
+
+```sh
+cmake --preset debug
+cmake --build --preset debug --parallel
+ctest --preset debug --output-on-failure
+cmake --preset tsan
+cmake --build --preset tsan --parallel
+ctest --preset tsan --output-on-failure
+```
+
+TSan is a race detector, not an allocation/deadline or audio-device check.
+Do not combine it with ASan/UBSan/LTO. A focused repeated test is appropriate
+for an intermittent concurrency regression, preserving the first failure log.
+The current realtime allocation/logging and ownership gaps are documented in
+[the execution contract](ENGINE-CONTRACT.md), with [nodeFlow-derived next steps](NODEFLOW-ADOPTION.md).
+
+All generated audio lives in private temporary directories and is cleaned up.
+CTest failures return a nonzero exit status; a configuration with no tests is
+an error in test presets. Tests have timeouts and support parallel execution.
+To focus a run or preserve machine-readable results:
+
+```sh
+ctest --preset default -L unit
+ctest --preset default -L integration
+ctest --preset default -R 'tooling.parity'
+ctest --preset default --output-junit build/default/ctest.xml
+./build/default/tests/mam_tests --test-case='*automation*'
+```
+
+## Adding a regression
+
+Add a focused `TEST_CASE` in `tests/`, then list any new translation unit in
+`tests/CMakeLists.txt`. Include the production header before doctest where
+practical so missing header dependencies are visible. Generate tiny audio
+fixtures locally. Use exact comparisons for unchanged PCM, sample indices
+and event order; state numerical tolerances for DSP/conversion comparisons.
+Test both successful behavior and the failure that motivated a fix.
+
+Do not replace assertions with the implementation's own calculation. Scheduler
+parity alone cannot catch all schedulers changing together; compare a saved
+pre-change baseline for DSP migrations. A test pass does not establish that a
+sound is musically better. Preserve a separate human listening review for musical choices.
+
+## Remaining boundaries
+
+MAM synthesizes/processes graphs and has a separate native streaming PCM stem
+renderer. Live/graph-integrated file-player nodes and a native Draft 2020 JSON
+Schema validator remain future work. The optional Python companion provides
+explicit offline schema preflight. Shared random sources and the legacy transport's
+fractional-frame truncation need separate work before arbitrary parallel stem
+sessions can be claimed deterministic and aligned. The selected Python ST/YM
+chip sound is not reproduced by `mam_chip`; retain printed approved buses.
+See [DigitalMania integration](NOROCKSTAR.md).

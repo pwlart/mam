@@ -1,0 +1,46 @@
+{
+  "source": "parent pipeline/chip_st.py:blep,square_note",
+  "source_sha256": "bc4969aeff0ca3cfd547e02cff10ecca8b5472889a2420e5a86cf5330e748b3f",
+  "numpy": "2.5.4",
+  "scipy": "1.18.1",
+  "sample_rate": 44100,
+  "cases": [
+    {
+      "parameters": {
+        "midi": 43,
+        "frames": 11025,
+        "tone": "bass",
+        "arp": [],
+        "velocity": 0.8
+      },
+      "sample_sha256": "56ec6b89b6288a76d23866758fefa133dd1aa235fb0347b5275ccea0e40b3233"
+    },
+    {
+      "parameters": {
+        "midi": 60,
+        "frames": 17640,
+        "tone": "comp",
+        "arp": [
+          0,
+          7,
+          12
+        ],
+        "velocity": 0.8
+      },
+      "sample_sha256": "523e2831160c2665bd95dea9944f997adcb2f2018b3860f336259310ff7529cc"
+    },
+    {
+      "parameters": {
+        "midi": 72,
+        "frames": 44100,
+        "tone": "lead",
+        "arp": [
+          0,
+          12
+        ],
+        "velocity": 0.8
+      },
+      "sample_sha256": "63e4b9a3e18cfe6ae515531a8eef2fa8c679e5f2588d887188fbb53d45194e47"
+    }
+  ]
+}

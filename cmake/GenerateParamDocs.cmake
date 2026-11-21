@@ -1,0 +1,7 @@
+get_filename_component(output_dir "${OUTPUT}" DIRECTORY)
+file(MAKE_DIRECTORY "${output_dir}")
+execute_process(COMMAND "${GENERATOR}" OUTPUT_FILE "${OUTPUT}" RESULT_VARIABLE result)
+if(NOT result EQUAL 0)
+    file(REMOVE "${OUTPUT}")
+    message(FATAL_ERROR "Parameter documentation generation failed: ${result}")
+endif()

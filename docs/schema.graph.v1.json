@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/mam/graph.schema.json",
+  "title": "MAM Graph v1",
+  "type": "object",
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "sampleRate": { "type": "number", "minimum": 8000 },
+    "channels": { "type": "integer", "minimum": 1 },
+    "randomSeed": { "type": "integer", "minimum": 0 },
+    "connections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to"],
+        "properties": {
+          "from": { "type": "string", "description": "Source node id (edge starts here)." },
+          "to":   { "type": "string", "description": "Destination node id (edge ends here)." },
+          "gainPercent": { "type": "number", "minimum": 0, "maximum": 200, "description": "Wet send from 'from' into 'to' input in percent. 100 = unity (0 dB), 50 ≈ -6 dB, 200 ≈ +6 dB." },
+          "dryPercent":  { "type": "number", "minimum": 0, "maximum": 200, "description": "Additional dry tap of the 'from' node mixed directly into the master output, bypassing 'to'. 0 = none, 100 = unity. Beware double-counting if the source is also in mixer inputs." },
+          "fromPort":    { "type": "integer", "minimum": 0, "description": "Future multi-port index on source node (0 = main)." },
+          "toPort":      { "type": "integer", "minimum": 0, "description": "Future multi-port index on destination node (0 = main)." }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "type": { "type": "string", "enum": ["kick", "clap", "transport", "delay", "meter", "compressor", "reverb", "wiretap"] },
+          "params": { "type": "object" },
+          "ports": {
+            "type": "object",
+            "description": "Optional port descriptors (MVP). Input and output ports with index/name/type/channels.",
+            "properties": {
+              "inputs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["index", "type"],
+                  "properties": {
+                    "index": { "type": "integer", "minimum": 0 },
+                    "name": { "type": "string" },
+                    "type": { "type": "string", "enum": ["audio", "control", "event", "midi"] },
+                    "channels": { "type": "integer", "minimum": 1 },
+                    "role": { "type": "string", "enum": ["main", "sidechain", "aux"] }
+                  }
+                }
+              },
+              "outputs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["index", "type"],
+                  "properties": {
+                    "index": { "type": "integer", "minimum": 0 },
+                    "name": { "type": "string" },
+                    "type": { "type": "string", "enum": ["audio", "control", "event", "midi"] },
+                    "channels": { "type": "integer", "minimum": 1 },
+                    "role": { "type": "string", "enum": ["main", "sidechain", "aux"] }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "mixer": {
+      "type": "object",
+      "properties": {
+        "masterPercent": { "type": "number", "minimum": 0, "maximum": 200 },
+        "softClip": { "type": "boolean" },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "gainPercent"],
+            "properties": {
+              "id": { "type": "string" },
+              "gainPercent": { "type": "number", "minimum": 0, "maximum": 200 }
+            }
+          }
+        }
+      }
+    },
+    "transport": {
+      "type": "object",
+      "properties": {
+        "bpm": { "type": "number", "minimum": 0 },
+        "lengthBars": { "type": "integer", "minimum": 1 },
+        "resolution": { "type": "integer", "minimum": 1 },
+        "swingPercent": { "type": "number", "minimum": 0, "maximum": 100 },
+        "tempoRamps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["bar", "bpm"],
+            "properties": {
+              "bar": { "type": "integer", "minimum": 0 },
+              "bpm": { "type": "number", "minimum": 1 }
+            }
+          }
+        },
+        "patterns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["nodeId", "steps"],
+            "properties": {
+              "nodeId": { "type": "string" },
+              "steps": { "type": "string" },
+              "locks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["step", "value"],
+                  "properties": {
+                    "step": { "type": "integer", "minimum": 0 },
+                    "paramId": { "type": "integer", "minimum": 0 },
+                    "param": { "type": "string" },
+                    "value": { "type": "number" },
+                    "rampMs": { "type": "number", "minimum": 0 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sampleTime", "nodeId", "type"],
+        "properties": {
+          "sampleTime": { "type": "integer", "minimum": 0 },
+          "nodeId": { "type": "string" },
+          "type": { "type": "string", "enum": ["Trigger", "SetParam", "SetParamRamp"] },
+          "paramId": { "type": "integer", "minimum": 0 },
+          "param": { "type": "string" },
+          "value": { "type": "number" },
+          "rampMs": { "type": "number", "minimum": 0 }
+        }
+      }
+    }
+  },
+  "required": ["version", "nodes"]
+}
