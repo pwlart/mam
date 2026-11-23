@@ -6,12 +6,12 @@ See [governance](../GOVERNANCE.md) for how changes are reviewed.
 
 | Priority | Work | Done when |
 | --- | --- | --- |
-| P0 | Migrate remaining single-graph realtime feeding | Apply the tested session cursor/admission policy to the separate graph route; saturation, cancellation and ordering tests need no device |
-| P0 | Remove allocation and logging from the callback | Precompiled routing/buffers plus a callback harness detect allocations, waits and I/O; telemetry is bounded |
+| P0 | Extend realtime coverage and live-device verification | Exercise every supported node/configuration, C allocators, waits and deadline behavior; validate CoreAudio negotiation and fault recovery on hardware |
 | P1 | Own random state per node | Same seed matches across block/thread counts for noisy graphs; reference sound changes are documented |
 | P1 | Rational beat-to-frame timing | Long-duration tempo/swing cases have explicit frame-error bounds; fractional rates no longer accumulate truncation |
 | P1 | Bound worker lifecycle and failure handling | Reject submissions after stop; cancellation, join/drain and exceptions have executable tests |
-| P1 | Reject unsupported graph cycles | Explicit graph policy replaces silent insertion-order fallback; invalid graphs fail before rendering |
+| P1 | Apply graph validation consistently offline | Prepared realtime graphs reject cycles/unknown links; replace the remaining offline insertion-order fallback with an explicit policy |
+| P1 | Repair manual session crossfader automation | Activate valid targets in a separate behavior patch with event/DSP comparisons; preserve the established LFO path |
 | P2 | One parameter/schema authority | Generated docs and validation share units, IDs, ranges and migration rules |
 | P2 | Portable offline core | CoreAudio separated from file/DSP libraries; Linux CI exercises actual offline rendering before claiming support |
 | P2 | Isolated plugin host | Fake plugin fixtures cover crash, hang, late response and architecture mismatch outside the audio callback |
@@ -24,12 +24,18 @@ See [governance](../GOVERNANCE.md) for how changes are reviewed.
   initial-window rejection, ordered retries and reported late-event recovery.
   Capacity boundaries, different loop periods, one-shots, cancellation and
   dispatch are covered without an audio device. This completes the session
-  portion of the startup milestone, not the separate single-graph feeder or
-  callback execution bounds. See [refactoring evidence](REFACTORING.md).
+  portion of the startup milestone. See [refactoring evidence](REFACTORING.md).
+- Migrated the remaining single-graph feeder, with finite cursors, initial
+  admission before playback and no lost distinct events or zero-step loops.
+- Prepared graph/session routing and buffers off-callback, bounded snapshot
+  draining, and moved diagnostics/metrics to control-thread polling. A dedicated
+  device-free harness measures first/variable blocks, C++ allocation, output and
+  telemetry saturation. See [prepared realtime scope](PREPARED-REALTIME.md).
 
-The next engine slice should prepare graph routing and buffers off-thread,
-then add a device-free callback harness that detects allocation and I/O.
-Keep clock/RNG changes separate so their audio differences remain reviewable.
+The prepared paths do not establish universal realtime safety or a hardware
+deadline guarantee. Keep clock/RNG and manual crossfader changes separate so
+their audio differences remain reviewable. Worker lifecycle is another bounded
+next implementation; broader node/device coverage should accompany it.
 
 ## Useful first contributions
 

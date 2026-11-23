@@ -12,6 +12,7 @@ Start with [getting started](GETTING-STARTED.md), then render the
 | Ownership, clocks and realtime boundaries | [Engine contract](ENGINE-CONTRACT.md) |
 | Work priorities and acceptance criteria | [Roadmap](ROADMAP.md) |
 | Incremental implementation and verification | [Engine refactoring](REFACTORING.md) |
+| Prepared callbacks, capacity and diagnostics | [Prepared realtime processing](PREPARED-REALTIME.md) |
 | Versioning and publishing | [Releasing](RELEASING.md) |
 | DigitalMania provenance and migration boundaries | [norockstar integration](NOROCKSTAR.md) |
 | Architecture lessons from nodeFlow | [nodeFlow adoption](NODEFLOW-ADOPTION.md) |

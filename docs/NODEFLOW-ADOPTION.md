@@ -14,7 +14,7 @@ discipline while keeping a sample clock and strict realtime constraints.
 | --- | --- | --- |
 | Core owns state; adapters stay outside (`08_ARCHITECTURE`, `core/04`) | Separate graph/control ownership, offline workers, device I/O and callback processing | Runtime contract documented; larger core isolation remains planned |
 | A run owns its data; failure publishes nothing (`core/02`, `10_ENGINE`) | Immutable render plans; completed artifacts only after validation; future graph swaps at block boundaries | File-job completion markers already exist; live graph swaps remain planned |
-| Queue policy must be possible and observable (`11_CONCURRENCY` §5) | Reject or stage startup overflow; preserve ordered triggers; report lateness; coalesce meters only | Multi-rack startup/refill fixed with device-free regressions; single-graph migration remains |
+| Queue policy must be possible and observable (`11_CONCURRENCY` §5) | Reject or stage startup overflow; preserve ordered triggers; report lateness; coalesce meters only | Both feeders use bounded cursors; callback drains and telemetry have fixed limits and regressions |
 | Deterministic clock and owned state (`core/01` §8, `core/05`) | Integer sample clock, per-node seeded RNG, serial/parallel/block-size parity | Sample-frame stem path verified; legacy RNG/transport still need work |
 | Stable diagnostics and explicit recovery (`05_ERROR_REPORTING`, `core/03`) | Category/code/location plus user message; distinguish invalid input, timeout and comparison failure | Roadmap; current CLI messages are not a unified diagnostic contract |
 | Debug assertions, TSan and isolated test layers (`core/05`, `11_CONCURRENCY` §6) | Separate debug/race presets; keep fixture tests independent of devices and production media | Debug/TSan presets implemented; existing suite passes |
@@ -58,13 +58,16 @@ device was opened to reproduce a playback failure.
    preflights the three-second window and uses one owned ordered cursor for
    startup/refill. Tests cover capacity, overlapping loops, future one-shots,
    retries, cancellation and late dispatch. The later duplicate branch was
-   unreachable and is removed. The separate single-graph feeder remains open.
+   unreachable and is removed. The single-graph feeder now shares the cursor
+   and initial admission policy, with bounded finite timelines.
    See [refactoring details](REFACTORING.md).
-2. **The callback path allocates and may log.**
-   `RealtimeGraphRenderer::render()` creates split-offset storage and formats
-   diagnostics; `Graph::process()` constructs per-port maps/vectors and can
-   resize buffers. A no-allocation realtime guarantee is therefore not true
-   of the current implementation. The new contract states this explicitly.
+2. **Legacy callback allocation/logging — prepared paths implemented.**
+   Both renderer callbacks now use prepared routing/buffers, bounded event
+   batches and numeric telemetry polled off-thread. The dedicated device-free
+   harness measures first/variable blocks and C++ allocation/console output.
+   General C allocation, locks, custom-node behavior and physical-device
+   deadlines still need broader validation. Legacy offline `Graph::process`
+   retains its dynamic maps/vectors; it is not used by prepared callbacks.
 3. **Shared randomness undermines replay.** `src/core/Random.hpp` exposes a
    global `std::mt19937` and documents concurrent mutation as unsafe;
    `MamChipNode::process()` calls global `rand()`. A seed alone cannot guarantee
@@ -75,27 +78,27 @@ device was opened to reproduce a playback failure.
    an exception containment boundary. Current scheduler batching limits normal
    submissions, but the class does not encode that assumption. Its lifecycle
    and failure contract should become testable before broader reuse.
-5. **Graph guarantees are implicit.** `Graph` exposes mutable node access, and
-   a topology cycle falls back to insertion order. Define which graph forms are
-   supported and reject unsupported ones before processing; do not infer an
-   arbitrary feedback model from the fallback. A debug single-node execution
-   witness should cover actual processing, not unrelated completion cleanup.
+5. **Graph guarantees still differ across paths.** Prepared realtime graphs
+   reject unsupported cycles, invalid connections and layouts before processing.
+   Offline topology retains insertion-order fallback. Mutable node access remains
+   stopped-only and needs re-preparation after storage/configuration changes.
+   A universal single-node re-entry witness remains future work.
 
 ## Ordered implementation milestones
 
 | Priority | Bounded change | Acceptance evidence |
 | --- | --- | --- |
-| 1 | Multi-rack session milestone implemented; migrate the separate single-graph feeder next | Session regressions pass at/beyond capacity without lost/doubled/reordered events; apply equivalent acceptance tests to graph playback |
-| 2 | Precompile graph routing/buffers off callback; move logging to bounded telemetry; add exact-scope debug re-entry guard | Allocation/fault-injection callback harness; no waits or I/O; late events counted; serial/parallel audio parity |
+| 1 | Session and single-graph bounded feeding implemented | Capacity, finite horizons, retries, ordering and cancellation have device-free regressions |
+| 2 | Prepared callback routing/buffers and bounded telemetry implemented; expand verification | First/variable-block C++ allocation/output harness passes for supplied fixtures; broader node/device/wait/deadline coverage and node re-entry guard remain |
 | 3 | Per-node seed/state and rational absolute beat→frame conversion | Same seed gives same node audio across block/thread counts; long-duration frame-error bounds; retain legacy golden comparisons |
 | 4 | Bounded offline task lifecycle, cancellation and stable structured diagnostics | Reject after stop, join/drain semantics, worker-failure propagation, timeout tests, retry only where declared safe |
 | 5 | One authoritative node/parameter schema and explicit format migration | Generated docs match schemas; unknown/narrowing/invalid-unit inputs fail clearly; old fixtures migrate intentionally |
 | 6 | Plugin/device adapter with its own execution process and capability handshake | Real-format fake plugin supports crash, hang, late response and architecture mismatch tests; no plugin work in callback |
 
-The session portion of the first milestone is implemented. Remaining feeder
-migration and callback preparation are still required before claiming robust
-unattended realtime playback. Each later step can land independently after its
-acceptance checks. Software tests do not approve a musical direction.
+The first milestone and the prepared-path part of the second are implemented.
+See [prepared realtime scope](PREPARED-REALTIME.md) before making broader safety
+claims. Each later step can land independently after its acceptance checks.
+Software tests do not approve a musical direction.
 
 ## What should not be copied literally
 

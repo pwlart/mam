@@ -3,213 +3,294 @@
 #include <AudioToolbox/AudioToolbox.h>
 #include <AudioUnit/AudioUnit.h>
 #include <CoreAudio/CoreAudioTypes.h>
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include "../core/Graph.hpp"
 #include "../core/ScopedAudioUnit.hpp"
 #include "../core/OsStatusUtils.hpp"
 #include "../core/Command.hpp"
-#include <vector>
-#include <algorithm>
-#include <atomic>
-#include "../core/TransportNode.hpp"
 #include "../session/SessionFeeding.hpp"
+#include "RealtimeTelemetry.hpp"
 
+// Configuration/preparation and diagnostics polling belong to the control
+// thread. renderBlock is the same device-free path called by CoreAudio; only
+// that single consumer may mutate the prepared graph while it is running.
+// Graph, command queue and every borrowed Command string must outlive stop()
+// and the final pollDiagnostics(); device-free callers also stop renderBlock
+// invocations before changing configuration, preparing or releasing owners.
 class RealtimeGraphRenderer {
 public:
+  enum class RenderStatus { Ok, NotPrepared, InvalidBuffer, CapacityExceeded, GraphFailure, TimeOverflow };
+
   RealtimeGraphRenderer() = default;
   ~RealtimeGraphRenderer() { stop(); }
 
-  void setCommandQueue(SpscCommandQueue<2048>* q) { cmdQueue_ = q; }
-  void setCmdQueueDebug(bool enabled) { queueDiag_ = enabled; }
+  void setCommandQueue(SpscCommandQueue<2048>* queue) { requireStopped(); cmdQueue_ = queue; }
+  void setCmdQueueDebug(bool enabled) { requireStopped(); queueDiag_ = enabled; }
   void setDiagnostics(bool printTriggers, double bpmForBeats, uint32_t resolutionStepsPerBar) {
-    printTriggers_ = printTriggers; diagBpm_ = bpmForBeats; diagResolution_ = (resolutionStepsPerBar == 0 ? 16u : resolutionStepsPerBar);
+    requireStopped();
+    printTriggers_ = printTriggers;
+    diagBpm_ = bpmForBeats;
+    diagResolution_ = resolutionStepsPerBar == 0 ? 16u : resolutionStepsPerBar;
   }
-  void setDiagLoop(uint64_t loopFrames) { diagLoopFrames_ = loopFrames; }
-  void setTransportEmitEnabled(bool enabled) { transportEmitEnabled_ = enabled; }
+  void setDiagLoop(uint64_t loopFrames) { requireStopped(); diagLoopFrames_ = loopFrames; }
+  void setTransportEmitEnabled(bool enabled) { requireStopped(); transportEmitEnabled_ = enabled; }
 
-  void start(Graph& graph, double requestedSampleRate, uint32_t channels) {
-    if (channels == 0) throw std::invalid_argument("channels must be > 0");
+  void prepareGraph(Graph& graph, double sampleRate, uint32_t maxFrames, uint32_t channels) {
+    requireStopped();
+    prepared_ = false;
+    if (transportEmitEnabled_)
+      throw std::invalid_argument("Prepared realtime graphs require queued transport events");
+    graph.prepareRealtime(sampleRate, maxFrames, channels);
+    graph.reset();
     graph_ = &graph;
+    sampleRate_ = sampleRate;
     channels_ = channels;
+    maxFrames_ = maxFrames;
+    sampleCounter_.store(0, std::memory_order_relaxed);
+    lateEvents_.store(0, std::memory_order_relaxed);
+    faults_.store(0, std::memory_order_relaxed);
+    telemetry_.reset();
+    reportedDropped_ = 0;
+    prepared_ = true;
+  }
 
+  // Device setup does not activate the consumer. The caller primes its bounded
+  // event queue at the actual device rate, then calls begin().
+  void start(Graph& graph, double requestedSampleRate, uint32_t channels) {
+    if (unit_.valid()) throw std::logic_error("Realtime graph device is already prepared");
+    if (channels != 1 && channels != 2) throw std::invalid_argument("Realtime graph supports mono or stereo");
     AudioComponentDescription desc{};
     desc.componentType = kAudioUnitType_Output;
     desc.componentSubType = kAudioUnitSubType_DefaultOutput;
     desc.componentManufacturer = kAudioUnitManufacturer_Apple;
-    AudioComponent comp = AudioComponentFindNext(nullptr, &desc);
-    if (!comp) throw std::runtime_error("Default output component not found");
+    AudioComponent component = AudioComponentFindNext(nullptr, &desc);
+    if (!component) throw std::runtime_error("Default output component not found");
+    OSStatus error = AudioComponentInstanceNew(component, unit_.ptr());
+    checkStatus(error, "AudioComponentInstanceNew");
 
-    OSStatus err = AudioComponentInstanceNew(comp, unit_.ptr());
-    if (err != noErr) throw std::runtime_error(std::string("AudioComponentInstanceNew failed: ") + osstatusToString(err));
+    AudioStreamBasicDescription format{};
+    format.mSampleRate = requestedSampleRate;
+    format.mFormatID = kAudioFormatLinearPCM;
+    format.mFormatFlags = kAudioFormatFlagsNativeFloatPacked;
+    format.mBitsPerChannel = 32;
+    format.mChannelsPerFrame = channels;
+    format.mFramesPerPacket = 1;
+    format.mBytesPerFrame = sizeof(float) * channels;
+    format.mBytesPerPacket = format.mBytesPerFrame;
+    error = AudioUnitSetProperty(unit_.get(), kAudioUnitProperty_StreamFormat,
+        kAudioUnitScope_Input, 0, &format, sizeof(format));
+    checkStatus(error, "AudioUnitSetProperty(StreamFormat)");
+    AURenderCallbackStruct callback{};
+    callback.inputProc = &RealtimeGraphRenderer::render;
+    callback.inputProcRefCon = this;
+    error = AudioUnitSetProperty(unit_.get(), kAudioUnitProperty_SetRenderCallback,
+        kAudioUnitScope_Global, 0, &callback, sizeof(callback));
+    checkStatus(error, "AudioUnitSetProperty(SetRenderCallback)");
+    checkStatus(AudioUnitInitialize(unit_.get()), "AudioUnitInitialize");
 
-    // Interleaved Float32 stereo (or N channels)
-    AudioStreamBasicDescription asbd{};
-    asbd.mSampleRate = requestedSampleRate;
-    asbd.mFormatID = kAudioFormatLinearPCM;
-    asbd.mFormatFlags = kAudioFormatFlagsNativeFloatPacked; // interleaved
-    asbd.mBitsPerChannel = 32;
-    asbd.mChannelsPerFrame = channels_;
-    asbd.mFramesPerPacket = 1;
-    asbd.mBytesPerFrame = 4 * channels_;
-    asbd.mBytesPerPacket = asbd.mBytesPerFrame;
-
-    err = AudioUnitSetProperty(unit_.get(), kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &asbd, sizeof(asbd));
-    if (err != noErr) throw std::runtime_error(std::string("AudioUnitSetProperty(StreamFormat) failed: ") + osstatusToString(err));
-
-    AURenderCallbackStruct cb{};
-    cb.inputProc = &RealtimeGraphRenderer::render;
-    cb.inputProcRefCon = this;
-    err = AudioUnitSetProperty(unit_.get(), kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Global, 0, &cb, sizeof(cb));
-    if (err != noErr) throw std::runtime_error(std::string("AudioUnitSetProperty(SetRenderCallback) failed: ") + osstatusToString(err));
-
-    err = AudioUnitInitialize(unit_.get());
-    if (err != noErr) throw std::runtime_error(std::string("AudioUnitInitialize failed: ") + osstatusToString(err));
-
-    // Update graph with actual sample rate
-    UInt32 size = sizeof(asbd);
-    err = AudioUnitGetProperty(unit_.get(), kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &asbd, &size);
-    if (err == noErr && asbd.mSampleRate > 0.0) {
-      graph_->prepare(asbd.mSampleRate, 1024);
-      graph_->reset();
-      sampleRate_ = asbd.mSampleRate;
-    } else {
-      graph_->prepare(requestedSampleRate, 1024);
-      graph_->reset();
-      sampleRate_ = requestedSampleRate;
-    }
-
-    sampleCounter_.store(0, std::memory_order_relaxed);
-    lateEvents_.store(0, std::memory_order_relaxed);
+    UInt32 size = sizeof(format);
+    checkStatus(AudioUnitGetProperty(unit_.get(), kAudioUnitProperty_StreamFormat,
+        kAudioUnitScope_Input, 0, &format, &size), "AudioUnitGetProperty(StreamFormat)");
+    UInt32 maximumFrames = 0;
+    size = sizeof(maximumFrames);
+    checkStatus(AudioUnitGetProperty(unit_.get(), kAudioUnitProperty_MaximumFramesPerSlice,
+        kAudioUnitScope_Global, 0, &maximumFrames, &size), "AudioUnitGetProperty(MaximumFramesPerSlice)");
+    if (format.mChannelsPerFrame != channels)
+      throw std::runtime_error("AudioUnit changed the requested channel layout");
+    prepareGraph(graph, format.mSampleRate, maximumFrames, channels);
   }
 
   void begin() {
-    if (!unit_.get()) throw std::logic_error("Realtime graph is not prepared");
-    const OSStatus err = AudioOutputUnitStart(unit_.get());
-    if (err != noErr) throw std::runtime_error(std::string("AudioOutputUnitStart failed: ") + osstatusToString(err));
+    if (!unit_.valid() || !prepared_) throw std::logic_error("Realtime graph is not prepared");
+    checkStatus(AudioOutputUnitStart(unit_.get()), "AudioOutputUnitStart");
+    running_ = true;
+  }
+  void stop() { unit_.release(); running_ = false; }
+
+  // All storage is fixed during preparation. Unsupported blocks return silence
+  // and a numeric fault; event/graph failures require preparation before retry.
+  RenderStatus renderBlock(std::span<float> output, uint32_t frames) noexcept {
+    const SampleTime blockStart = sampleCounter_.load(std::memory_order_relaxed);
+    if (frames > std::numeric_limits<SampleTime>::max() - blockStart)
+      return fail(output, RenderStatus::TimeOverflow, blockStart);
+    const SampleTime cutoff = blockStart + frames;
+    if (!prepared_ || !graph_) return fail(output, RenderStatus::NotPrepared, blockStart);
+    if (frames > maxFrames_) return fail(output, RenderStatus::CapacityExceeded, blockStart);
+    if (output.size() < static_cast<size_t>(frames) * channels_)
+      return fail(output, RenderStatus::InvalidBuffer, blockStart);
+    if (frames == 0) return RenderStatus::Ok;
+
+    using mam::realtime::TelemetryKind;
+    using mam::realtime::TelemetryRecord;
+    if (printTriggers_ && diagLoopFrames_ > 0) {
+      const auto remainder = blockStart % diagLoopFrames_;
+      const auto distance = remainder == 0 ? 0 : diagLoopFrames_ - remainder;
+      if (distance < frames) {
+        TelemetryRecord record;
+        record.kind = TelemetryKind::Loop;
+        record.frame = blockStart + distance;
+        record.index = static_cast<size_t>(record.frame / diagLoopFrames_);
+        telemetry_.push(record);
+      }
+    }
+    const size_t count = cmdQueue_ ? cmdQueue_->drainUpToBounded(cutoff, drained_) : 0;
+    if (queueDiag_) {
+      TelemetryRecord record;
+      record.kind = TelemetryKind::Block;
+      record.frame = blockStart;
+      record.cutoff = cutoff;
+      record.count = count;
+      telemetry_.push(record);
+    }
+    size_t splitCount = 1;
+    splits_[0] = 0;
+    for (size_t i = 0; i < count; ++i) {
+      if (drained_[i].sampleTime > blockStart) {
+        const auto offset = static_cast<uint32_t>(drained_[i].sampleTime - blockStart);
+        if (offset != splits_[splitCount - 1]) splits_[splitCount++] = offset;
+      }
+    }
+    splits_[splitCount++] = frames;
+    mam::session::SessionEventDispatcher dispatcher(std::span<const Command>(drained_.data(), count), blockStart);
+    bool eventFailed = false;
+    const auto deliver = [&](const Command& command) noexcept {
+      if (printTriggers_) {
+        TelemetryRecord record;
+        record.kind = TelemetryKind::Command;
+        record.command = command;
+        telemetry_.push(record);
+      }
+      if (!graph_->handlePreparedEvent(command)) eventFailed = true;
+    };
+    for (size_t split = 0; split + 1 < splitCount; ++split) {
+      const auto segmentStart = splits_[split];
+      const auto segmentFrames = splits_[split + 1] - segmentStart;
+      const auto late = dispatcher.dispatchAt(blockStart + segmentStart,
+          [](const Command&) noexcept {}, deliver, deliver);
+      lateEvents_.fetch_add(late, std::memory_order_relaxed);
+      if (eventFailed) {
+        prepared_ = false;
+        sampleCounter_.store(cutoff, std::memory_order_relaxed);
+        return fail(output, RenderStatus::GraphFailure, blockStart);
+      }
+      ProcessContext context{};
+      context.sampleRate = sampleRate_;
+      context.frames = segmentFrames;
+      context.blockStart = blockStart + segmentStart;
+      const auto segment = output.subspan(static_cast<size_t>(segmentStart) * channels_,
+          static_cast<size_t>(segmentFrames) * channels_);
+      const auto status = graph_->processPrepared(context, segment, channels_);
+      if (status != Graph::PreparedProcessStatus::Ok) {
+        prepared_ = false;
+        sampleCounter_.store(cutoff, std::memory_order_relaxed);
+        return fail(output, RenderStatus::GraphFailure, blockStart);
+      }
+    }
+    sampleCounter_.store(cutoff, std::memory_order_relaxed);
+    return RenderStatus::Ok;
   }
 
-  void stop() {
-    unit_.release();
+  // Only the control thread formats diagnostics. It may drop telemetry when
+  // stalled; that does not drop or coalesce commands delivered to the graph.
+  void pollDiagnostics() {
+    mam::realtime::TelemetryRecord record;
+    for (size_t count = 0; count < telemetry_.capacity() && telemetry_.pop(record); ++count) {
+      switch (record.kind) {
+        case mam::realtime::TelemetryKind::Command:
+          printEvent(record.command.type == CommandType::Trigger ? "TRIGGER" :
+              (record.command.type == CommandType::SetParam ? "SET" : "RAMP"), record.command);
+          break;
+        case mam::realtime::TelemetryKind::Loop:
+          std::fprintf(stderr, "Loop %llu\n", static_cast<unsigned long long>(record.index));
+          break;
+        case mam::realtime::TelemetryKind::Block:
+          std::fprintf(stderr, "[rt] drained %zu events up to %llu (block %llu..%llu)\n", record.count,
+              static_cast<unsigned long long>(record.cutoff), static_cast<unsigned long long>(record.frame),
+              static_cast<unsigned long long>(record.cutoff));
+          break;
+        case mam::realtime::TelemetryKind::Fault:
+          std::fprintf(stderr, "[rt-graph] render fault=%zu at frame=%llu\n", record.index,
+              static_cast<unsigned long long>(record.frame));
+          break;
+        default: break;
+      }
+    }
+    const auto dropped = telemetry_.dropped();
+    if (dropped != reportedDropped_) {
+      std::fprintf(stderr, "[rt-graph] diagnostic records dropped: %llu\n", static_cast<unsigned long long>(dropped));
+      reportedDropped_ = dropped;
+    }
   }
 
   double sampleRate() const noexcept { return sampleRate_; }
-  uint64_t lateEventCount() const noexcept { return lateEvents_.load(std::memory_order_relaxed); }
   SampleTime sampleCounter() const noexcept { return sampleCounter_.load(std::memory_order_relaxed); }
+  uint64_t lateEventCount() const noexcept { return lateEvents_.load(std::memory_order_relaxed); }
+  uint64_t faultCount() const noexcept { return faults_.load(std::memory_order_relaxed); }
+  uint64_t droppedTelemetryCount() const noexcept { return telemetry_.dropped(); }
 
 private:
-  static OSStatus render(void* inRefCon, AudioUnitRenderActionFlags*, const AudioTimeStamp*, UInt32, UInt32 inNumberFrames, AudioBufferList* ioData) noexcept {
-    auto* self = static_cast<RealtimeGraphRenderer*>(inRefCon);
-    // Interleaved: single buffer expected
-    float* interleaved = static_cast<float*>(ioData->mBuffers[0].mData);
-
-    // Compute split points for sample-accurate event application
-    const SampleTime blockStartAbs = self->sampleCounter_.load(std::memory_order_relaxed);
-    const SampleTime cutoff = blockStartAbs + static_cast<SampleTime>(inNumberFrames);
-    // Print loop boundary if it falls at block start or anywhere within this block,
-    // before applying triggers (ensures visibility even when boundary is between triggers)
-    if (self->printTriggers_ && self->diagLoopFrames_ > 0) {
-      const uint64_t L = self->diagLoopFrames_;
-      if (L > 0) {
-        const uint64_t start = static_cast<uint64_t>(blockStartAbs);
-        const uint64_t end = static_cast<uint64_t>(cutoff);
-        if ((start % L) == 0ull) {
-          const uint64_t loopIdx = start / L;
-          std::fprintf(stderr, "Loop %llu\n", static_cast<unsigned long long>(loopIdx));
-        } else if (end > start) {
-          const uint64_t next = ((start + L - 1ull) / L) * L; // first multiple in [start, ∞)
-          if (next >= start && next < end) {
-            const uint64_t loopIdx = next / L;
-            std::fprintf(stderr, "Loop %llu\n", static_cast<unsigned long long>(loopIdx));
-          }
+  void requireStopped() const {
+    if (running_) throw std::logic_error("Stop realtime graph before changing configuration");
+  }
+  static void checkStatus(OSStatus status, const char* operation) {
+    if (status != noErr) throw std::runtime_error(std::string(operation) + " failed: " + osstatusToString(status));
+  }
+  RenderStatus fail(std::span<float> output, RenderStatus status, SampleTime frame) noexcept {
+    std::fill(output.begin(), output.end(), 0.0f);
+    faults_.fetch_add(1, std::memory_order_relaxed);
+    mam::realtime::TelemetryRecord record;
+    record.kind = mam::realtime::TelemetryKind::Fault;
+    record.index = static_cast<size_t>(status);
+    record.frame = frame;
+    telemetry_.push(record);
+    return status;
+  }
+  static OSStatus render(void* context, AudioUnitRenderActionFlags* flags, const AudioTimeStamp*,
+                         UInt32, UInt32 frames, AudioBufferList* buffers) noexcept {
+    auto* self = static_cast<RealtimeGraphRenderer*>(context);
+    if (!buffers || buffers->mNumberBuffers != 1 || !buffers->mBuffers[0].mData ||
+        buffers->mBuffers[0].mNumberChannels != self->channels_) {
+      if (buffers) {
+        for (UInt32 i = 0; i < buffers->mNumberBuffers; ++i) {
+          auto& buffer = buffers->mBuffers[i];
+          if (buffer.mData) std::memset(buffer.mData, 0, buffer.mDataByteSize);
         }
       }
+      self->fail({}, RenderStatus::InvalidBuffer, self->sampleCounter());
+      if (flags) *flags |= kAudioUnitRenderAction_OutputIsSilence;
+      return noErr;
     }
-    std::vector<uint32_t> splitOffsets;
-    splitOffsets.reserve(8);
-    splitOffsets.push_back(0);
-    if (self->cmdQueue_) {
-      self->drained_.clear();
-      self->cmdQueue_->drainUpTo(cutoff, self->drained_);
-      if (self->queueDiag_) {
-        std::fprintf(stderr, "[rt] drained %zu events up to %llu (block %llu..%llu)\n",
-          self->drained_.size(),
-          static_cast<unsigned long long>(cutoff),
-          static_cast<unsigned long long>(blockStartAbs),
-          static_cast<unsigned long long>(cutoff));
-      }
-      for (const Command& c : self->drained_) {
-        if (c.sampleTime >= blockStartAbs && c.sampleTime < cutoff) {
-          const uint32_t off = static_cast<uint32_t>(c.sampleTime - blockStartAbs);
-          splitOffsets.push_back(off);
-        }
-      }
-      self->sampleCounter_.store(cutoff, std::memory_order_relaxed);
-    } else {
-      self->sampleCounter_.store(cutoff, std::memory_order_relaxed);
-    }
-    splitOffsets.push_back(inNumberFrames);
-    std::sort(splitOffsets.begin(), splitOffsets.end());
-    splitOffsets.erase(std::unique(splitOffsets.begin(), splitOffsets.end()), splitOffsets.end());
-
-    mam::session::SessionEventDispatcher dispatcher(self->drained_, blockStartAbs);
-    // Render each segment and apply events at boundaries
-    for (size_t si = 0; si + 1 < splitOffsets.size(); ++si) {
-      const uint32_t segStart = splitOffsets[si];
-      const uint32_t segEnd = splitOffsets[si + 1];
-      const uint32_t segFrames = segEnd - segStart;
-      if (segFrames == 0) continue;
-
-      const auto deliver = [&](const Command& command) {
-        if (self->printTriggers_) self->printEvent(command.type == CommandType::Trigger ? "TRIGGER" :
-            (command.type == CommandType::SetParam ? "SET" : "RAMP"), command);
-        if (command.nodeId) self->graph_->forEachNode([&](const std::string& id, Node& node) {
-          if (id == command.nodeId) node.handleEvent(command);
-        });
-      };
-      const auto late = dispatcher.dispatchAt(blockStartAbs + segStart,
-          [](const Command&) {}, deliver, deliver);
-      self->lateEvents_.fetch_add(late, std::memory_order_relaxed);
-
-      // Let transport-like nodes emit events at exact sample offsets across the whole segment
-      self->graph_->forEachNode([&](const std::string& id, Node& n){
-        (void)id;
-        if (self->transportEmitEnabled_) if (auto* t = dynamic_cast<TransportNode*>(&n)) {
-          SampleTime cursor = blockStartAbs + static_cast<SampleTime>(segStart);
-          const SampleTime segAbsEnd = blockStartAbs + static_cast<SampleTime>(segEnd);
-          // Emit all events at or after cursor; if next event is before cursor (wrap), allow it on the boundary to avoid missing step 0
-          while (true) {
-            const SampleTime next = t->nextEventSample();
-            if (next < cursor) break; // already emitted earlier in this block
-            if (next >= segAbsEnd) break;
-            t->emitIfMatch(next, [&](const Command& c){
-              if (self->printTriggers_) self->printEvent("TRANSPORT", c);
-              self->graph_->forEachNode([&](const std::string& nid, Node& nn){ if (nid == c.nodeId) nn.handleEvent(c); });
-            });
-            cursor = next + 1;
-          }
-        }
-      });
-
-      ProcessContext ctx{};
-      ctx.sampleRate = self->sampleRate_;
-      ctx.frames = segFrames;
-      ctx.blockStart = blockStartAbs + static_cast<SampleTime>(segStart);
-      float* outPtr = interleaved + static_cast<size_t>(segStart) * self->channels_;
-      self->graph_->process(ctx, outPtr, self->channels_);
-    }
+    auto& buffer = buffers->mBuffers[0];
+    const auto result = self->renderBlock(std::span<float>(static_cast<float*>(buffer.mData),
+        buffer.mDataByteSize / sizeof(float)), frames);
+    if (result != RenderStatus::Ok && flags) *flags |= kAudioUnitRenderAction_OutputIsSilence;
     return noErr;
   }
 
   AudioUnitHandle unit_{};
   Graph* graph_ = nullptr;
   uint32_t channels_ = 2;
+  uint32_t maxFrames_ = 0;
   double sampleRate_ = 48000.0;
+  bool prepared_ = false;
+  bool running_ = false;
   std::atomic<SampleTime> sampleCounter_{0};
   std::atomic<uint64_t> lateEvents_{0};
+  std::atomic<uint64_t> faults_{0};
   SpscCommandQueue<2048>* cmdQueue_ = nullptr;
-  std::vector<Command> drained_;
+  std::array<Command, 2047> drained_{};
+  std::array<uint32_t, 2049> splits_{};
+  mam::realtime::TelemetryQueue<> telemetry_;
+  uint64_t reportedDropped_ = 0;
   bool printTriggers_ = false;
   double diagBpm_ = 120.0;
   uint32_t diagResolution_ = 16;

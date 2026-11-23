@@ -60,11 +60,43 @@ Four generated renders remain sample-for-sample identical to the clean 0.1.0
 baseline, and eight CLI routes retain their normalized output and exit codes.
 Repository hygiene, relative links, whitespace and local secret scans pass.
 
+## Third slice: single-graph feeding
+
+The remaining graph route now prepares one owned bounded schedule before audio
+activation. Finite explicit-only schedules use an exclusive end frame rather
+than pre-expanded copies; empty/frame-zero-only inputs cannot spin forever.
+Transport retains its legacy loop arithmetic. Distinct events survive callback
+dispatch, and live graph statistics are read only after processing stops.
+The scheduling commit builds independently and passes all 75 native tests in
+an isolated exported checkout.
+
+## Fourth slice: prepared callbacks and diagnostics
+
+Graph and session routing, event/split buffers and effect scratch are prepared
+off-thread. Both real callbacks call the device-free `renderBlock` path; bounded
+snapshot drains retain arrivals beyond the current batch. Diagnostics cross a
+bounded numeric queue and are formatted/written by control-thread polling.
+Capacity, format and node failures silence/report the block; CLI playback exits
+after a fault. The device adapter queries the actual maximum callback size.
+
+Generated tests compare prepared graph samples and session segment-reset
+duckers with legacy behavior. A separate allocation harness measures the first
+and variable blocks, actual instruments, effects, diagnostics and deferred metrics
+files. Read [prepared realtime processing](PREPARED-REALTIME.md) for supported
+behavior and the limits of these probes. This is not a universal node/device
+deadline guarantee. Offline PCM and normal CLI characterization remain unchanged.
+
+The complete fourth slice passes 110 native cases in default, debug, TSan,
+ASan and UBSan builds. The Python preset passes 111 CTest entries including
+69 pytest cases. The deferred metrics-file regression additionally passes in
+all six configurations. Four offline renders match the saved pre-change build
+exactly and eight CLI routes preserve normalized output/exit codes. Repository
+hygiene, links, whitespace and local source/history secret scans pass.
+
 ## Remaining scope
 
-Callback allocation/logging, graph validation/preparation, rational transport
-time, per-node randomness and worker-pool lifecycle remain separate roadmap
-items. The separate single-graph realtime feeder is not migrated by this slice.
+Broader node/device coverage, rational transport time, per-node randomness,
+manual crossfader automation and worker-pool lifecycle remain roadmap items.
 Musical session commands still have a clock-conversion gap if the actual device
 rate differs from the requested rate. These changes do not rerender accepted
 production masters.

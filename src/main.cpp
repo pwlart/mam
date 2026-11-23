@@ -1238,6 +1238,8 @@ int main(int argc, char** argv) {
     uint64_t lastPrintedLoop = 0;
     uint64_t lastLateCount = 0;
     while (gRunning.load(std::memory_order_relaxed)) {
+      rt.pollDiagnostics();
+      if (rt.faultCount() != 0) break;
       if (isStdinReady()) {
         char buffer[4];
         (void)read(STDIN_FILENO, buffer, sizeof(buffer));
@@ -1264,6 +1266,8 @@ int main(int argc, char** argv) {
     feeder.request_stop();
     if (feeder.joinable()) feeder.join();
     rt.stop();
+    rt.pollDiagnostics();
+    if (rt.faultCount() != 0) return 1;
     // Mutable node/graph statistics are read only after the consumer stops.
     if (cpuStats || cpuStatsPerNode) {
       const auto stats = graph.getCpuSummary();

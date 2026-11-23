@@ -13,11 +13,12 @@ meets a hard realtime contract. Detailed findings: [nodeFlow adoption](NODEFLOW-
 | Offline graph render | Serial/parallel schedulers process mutable node state | One invocation per node at a time; join work before reading final results |
 | Native stem render | Fixed manifest order; bounded PCM reads/writes; integer frame placement | Preserve source windows, summation order and format contracts; publish completion last |
 | Python jobs | Separate optional process, timeout, strict job schema, provenance/cache | File-based boundaries; no Python execution or package installation in the callback |
-| Realtime callback | Legacy graph path currently allocates and can print diagnostics | New callback code must avoid allocation, locks, waits, file/network I/O and formatting |
+| Realtime callback | Prepared graph/session paths use fixed routing/buffers and bounded numeric telemetry | No lazy allocation, locks, waits, file/network I/O or formatting; custom nodes need independent validation |
 
-The realtime row is an unresolved implementation gap, not a waiver. The
-existing offline tests do not open an audio device and cannot establish glitch-
-free playback, callback allocation bounds or safety of concurrent live edits.
+The device-free callback harness measures first/variable blocks and detects C++
+allocations and stdout/stderr writes in its fixtures. It does not monitor all C
+allocators, system calls or waits and cannot establish glitch-free device playback
+or safety of concurrent live edits. See [prepared realtime](PREPARED-REALTIME.md).
 
 ## Node and event ownership
 
@@ -39,7 +40,7 @@ free playback, callback allocation bounds or safety of concurrent live edits.
   is appropriate for telemetry only when the declared contract permits it.
   Report refused/late events with counters outside the callback.
 
-### Multi-rack realtime session policy
+### Realtime scheduling policy
 
 `EventSchedule` owns the immutable base events and strings, plus one heap cursor
 per event. It must outlive queued commands even after all one-shots are exhausted.
@@ -48,10 +49,12 @@ parameter ID, value and base insertion order. Repetition does not reset this
 ordering. Zero period means one-shot; uint64 timestamp overflow ends a repetition.
 
 Before audio activation, the exclusive three-second initial horizon must fit
-16,383 entries. Excess density is rejected; no consumer wait occurs. Later pumps
-accept at most 16,383 events per invocation, leave a refused event pending and
+16,383 session entries or 2,047 single-graph entries. Excess density is rejected;
+no consumer wait occurs. Later pumps accept at most queue capacity per invocation,
+leave a refused event pending and
 check cancellation. A future one-shot cannot overtake earlier recurring events.
-The producer's 20 ms polling interval is not a deadline guarantee.
+The producer's polling interval is not a deadline guarantee. Finite graph
+schedules use an exclusive end frame; empty/zero-period inputs do not spin.
 
 Late commands are delivered at the next available block start, preserving their
 original timestamp groups. Crossfader controls and parameters precede triggers
@@ -60,10 +63,13 @@ control thread. Missed timing is audible degradation, not sample-accurate recove
 Stopping joins the producer, stops audio, closes metrics, then releases borrowed
 inputs. Startup failure never activates a partially primed queue.
 
-These guarantees cover the multi-rack session route. The single-graph route has
-not yet adopted this policy. Queue draining and callback execution remain
-unbounded: the existing callback allocates, formats diagnostics and may write
-metrics. The bounded producer does not establish a hard realtime callback.
+Both realtime routes use snapshot draining into fixed storage. Work is bounded
+by the prepared graph/session size, queue batch and block capacity. Arrivals
+after the snapshot remain queued. Oversized or invalid blocks are silenced and
+counted without growing buffers; node failures invalidate prepared processing.
+The control loop stops after faults rather than waiting for a stalled sample
+clock. Telemetry overflow counts dropped diagnostics without dropping music.
+The supplied harness does not establish hard realtime deadlines for all nodes.
 
 ## Time, randomness and types
 
@@ -91,7 +97,9 @@ recipe and audio hashes because a Git revision alone does not prove provenance.
 Do not copy nodeFlow's throwing/blocking node pattern into an audio callback.
 Validate predictable errors off the callback; an eventual realtime fault path
 needs a bounded silence/bypass policy and a preallocated diagnostic channel.
-That fault-containment mechanism is planned, not implemented here.
+Prepared render paths now return status, silence the supplied block and count
+faults. Node exceptions can themselves allocate or unwind; this containment is
+not a universal exception-safety/deadline guarantee for arbitrary nodes.
 
 Distinguish request accepted, job completed, comparison passed, musical choice
 accepted and publication authorized. Timeouts and process exits do not grant

@@ -4,6 +4,8 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <limits>
+#include <stdexcept>
 
 // Minimal multiband spectral ducking built on CompressorNode plumbing.
 // Uses 3 peaking filters as approximate bands and applies per-band envelope gain.
@@ -33,6 +35,7 @@ public:
   const char* name() const override { return "spectral_ducker"; }
 
   void prepare(double sampleRate, uint32_t maxBlock) override {
+    realtimePrepared_ = false;
     CompressorNode::prepare(sampleRate, maxBlock);
     sampleRate_ = (sampleRate > 0.0) ? sampleRate : 48000.0;
     maxBlock_ = maxBlock;
@@ -40,6 +43,31 @@ public:
     ensureDelayCapacity(lastChannels_ == 0 ? 2u : lastChannels_);
     updateDetectorHpf();
     setupBands();
+  }
+
+  // Channel-aware preparation is explicit: warming by rendering would change
+  // DSP state. Scratch, filter state and lookahead storage are all sized here.
+  // Parameters that change storage (band count/layout/block capacity) require
+  // another stopped-engine preparation.
+  void prepareRealtime(double sampleRate, uint32_t maxFrames, uint32_t channels) {
+    const double lookahead = std::floor((lookaheadMs / 1000.0f) *
+                                        static_cast<float>(sampleRate) + 0.5);
+    if (!std::isfinite(sampleRate) || sampleRate <= 0.0 || maxFrames == 0 ||
+        (channels != 1 && channels != 2) || !std::isfinite(lookaheadMs) ||
+        lookaheadMs < 0.0f || !std::isfinite(lookahead) ||
+        lookahead > static_cast<double>(std::numeric_limits<uint32_t>::max() - maxFrames))
+      throw std::invalid_argument("Invalid realtime spectral ducker preparation");
+    prepare(sampleRate, maxFrames);
+    ensureDelayCapacity(channels);
+    lastChannels_ = channels;
+    scMono_.resize(maxFrames);
+    gains_.resize(maxFrames);
+    ensureMainStates(channels);
+    reset();
+    realtimeChannels_ = channels;
+    realtimeMaxFrames_ = maxFrames;
+    realtimeBandCount_ = bands.size();
+    realtimePrepared_ = true;
   }
   void reset() override {
     CompressorNode::reset();
@@ -56,10 +84,18 @@ public:
   void applySidechain(ProcessContext ctx, float* mainInterleaved, const float* scInterleaved, uint32_t channels) override {
     const uint32_t frames = ctx.frames;
     if (channels == 0 || frames == 0) return;
-    if (lastChannels_ != channels || delay_.empty()) ensureDelayCapacity(channels);
-    lastChannels_ = channels;
+    if (realtimePrepared_) {
+      if (channels != realtimeChannels_ || frames > realtimeMaxFrames_ ||
+          bands.size() != realtimeBandCount_ || ctx.sampleRate != sampleRate_) {
+        std::fill_n(mainInterleaved, static_cast<size_t>(frames) * channels, 0.0f);
+        return;
+      }
+    } else {
+      if (lastChannels_ != channels || delay_.empty()) ensureDelayCapacity(channels);
+      lastChannels_ = channels;
+    }
     // Build mono sidechain
-    scMono_.assign(frames, 0.0f);
+    if (!realtimePrepared_) scMono_.assign(frames, 0.0f);
     for (uint32_t i = 0; i < frames; ++i) {
       double sum = 0.0;
       for (uint32_t c = 0; c < channels; ++c) sum += scInterleaved[static_cast<size_t>(i)*channels + c];
@@ -74,13 +110,16 @@ public:
       }
     }
     // For each band: filter detector -> envelope -> per-band gain via threshold/ratio/knee/hold; combine via min
-    if (filters_.size() != bands.size()) setupBands();
-    if (envs_.size() != bands.size()) envs_.assign(bands.size(), 0.0f);
-    if (states_.size() != bands.size()) states_.assign(bands.size(), BiquadState{});
-    if (lastBandGain_.size() != bands.size()) lastBandGain_.assign(bands.size(), 1.0f);
-    if (holdRemain_.size() != bands.size()) holdRemain_.assign(bands.size(), 0u);
-
-    gains_.assign(frames, 1.0f);
+    if (!realtimePrepared_) {
+      if (filters_.size() != bands.size()) setupBands();
+      if (envs_.size() != bands.size()) envs_.assign(bands.size(), 0.0f);
+      if (states_.size() != bands.size()) states_.assign(bands.size(), BiquadState{});
+      if (lastBandGain_.size() != bands.size()) lastBandGain_.assign(bands.size(), 1.0f);
+      if (holdRemain_.size() != bands.size()) holdRemain_.assign(bands.size(), 0u);
+      gains_.assign(frames, 1.0f);
+    } else {
+      std::fill_n(gains_.begin(), frames, 1.0f);
+    }
     for (size_t bi = 0; bi < bands.size(); ++bi) {
       const Band& b = bands[bi];
       const float depthLin = std::pow(10.0f, b.depthDb / 20.0f);
@@ -164,7 +203,7 @@ public:
         writeIndexFrames_++;
       }
     } else { // DynamicEq
-      ensureMainStates(channels);
+      if (!realtimePrepared_) ensureMainStates(channels);
       for (uint32_t i = 0; i < frames; ++i) {
         const uint32_t writeF = static_cast<uint32_t>(writeIndexFrames_ % capacityFrames_);
         const uint32_t readF  = (writeIndexFrames_ + capacityFrames_ - std::min(lookaheadSamples_, capacityFrames_ - 1)) % capacityFrames_;
@@ -271,6 +310,10 @@ private:
   std::vector<float> lastBandGain_{};
   std::vector<uint32_t> holdRemain_{};
   std::vector<uint32_t> holdSamplesPerBand_{};
+  bool realtimePrepared_ = false;
+  uint32_t realtimeChannels_ = 0;
+  uint32_t realtimeMaxFrames_ = 0;
+  size_t realtimeBandCount_ = 0;
 };
 
 inline float SpectralDuckerNode::Biquad::process(float x, SpectralDuckerNode::BiquadState& s) const {

@@ -11,12 +11,29 @@ add_executable(mam_tests
     test_event_schedule.cpp
     test_session_feeding.cpp
     test_graph_playback.cpp
+    test_bounded_callback_queue.cpp
 )
 target_include_directories(mam_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(mam_tests PRIVATE doctest::doctest mam_render mam_app)
 mam_configure_target(mam_tests)
 include(${PROJECT_SOURCE_DIR}/vendor/doctest/cmake/doctest.cmake)
 doctest_discover_tests(mam_tests TEST_PREFIX "unit." PROPERTIES TIMEOUT 30 LABELS unit)
+
+# The C++ allocation probes override new/delete only in this dedicated harness.
+# Device-free renderBlock is the same path used by the CoreAudio callbacks.
+add_executable(mam_realtime_tests
+    test_main.cpp
+    AllocationWatch.cpp
+    test_prepared_graph.cpp
+    test_node_preparation.cpp
+    test_graph_callback.cpp
+    test_prepared_session.cpp
+    test_realtime_allocations.cpp
+)
+target_include_directories(mam_realtime_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(mam_realtime_tests PRIVATE doctest::doctest mam_render mam_app)
+mam_configure_target(mam_realtime_tests)
+doctest_discover_tests(mam_realtime_tests TEST_PREFIX "realtime." PROPERTIES TIMEOUT 30 LABELS "unit;realtime")
 
 find_program(MAM_BASH bash REQUIRED)
 foreach(rate IN ITEMS 44100 48000)

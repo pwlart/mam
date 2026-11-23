@@ -45,7 +45,7 @@ tables, run `cmake --build --preset default --target docs`; review
 
 ## What the suite checks
 
-The current development suite has 67 native CTest cases: 53 doctest units and 14
+The current development suite has 110 native CTest cases: 96 doctest units and 14
 integration/tooling checks (the released 0.1.0 snapshot had 38 native cases).
 The optional `python` preset adds one CTest entry
 running 69 worker, DSP and DigitalMania pytest cases:
@@ -78,6 +78,14 @@ configure `asan` or `ubsan` with `-DMAM_ENABLE_PYTHON_TESTS=ON` before building.
   values seen by successive triggers and on-time xfader/parameter/trigger phases.
   Late counts and delivery occur once. These pure helper tests do not open
   CoreAudio or establish a callback allocation/deadline bound.
+- Prepared graph and session renderers share their actual `renderBlock` path
+  with a device-free harness. It checks exact routing/DSP parity, capacity/fault
+  behavior, bounded queue snapshots, telemetry saturation and first/variable
+  mono/stereo blocks with actual instruments, delay and spectral ducking.
+- The dedicated `mam_realtime_tests` executable instruments C++ allocation/free
+  and captures console output, with positive controls. Session metric files stay
+  empty until control polling. These checks do not intercept every C allocator,
+  syscall or lock and do not prove arbitrary-node or hardware deadline safety.
 - Kick synthesis stays finite, decays, responds to velocity and resets
   reproducibly. Meter and SHA1 results have independent known answers.
 - Transport locks precede same-sample triggers; exact 48 kHz beat positions,
@@ -113,7 +121,7 @@ ctest --preset tsan --output-on-failure
 TSan is a race detector, not an allocation/deadline or audio-device check.
 Do not combine it with ASan/UBSan/LTO. A focused repeated test is appropriate
 for an intermittent concurrency regression, preserving the first failure log.
-The current realtime allocation/logging and ownership gaps are documented in
+The current prepared realtime guarantees and remaining gaps are documented in
 [the execution contract](ENGINE-CONTRACT.md), with [nodeFlow-derived next steps](NODEFLOW-ADOPTION.md).
 
 All generated audio lives in private temporary directories and is cleaned up.

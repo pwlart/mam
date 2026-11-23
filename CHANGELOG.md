@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add prepared graph/session callback paths with preallocated routing and DSP
+  buffers, bounded command draining and numeric telemetry polled off-thread.
+  Query actual device slice capacity, silence/report unsupported blocks and
+  stop CLI playback after a callback fault. Device-free callback tests detect
+  C++ allocations and console output, including the first block after setup.
+- Preserve legacy session ducker resets and inactive manual xfader commands;
+  reject nonfinite configuration and bound phase wrapping. Prepared graph
+  validation rejects cycles and unknown connections; offline policy is unchanged.
 - Migrate single-graph playback to the owned event cursor. Prime before audio
   activation, bound finite explicit schedules, retain distinct events and late
   groups, and join the feeder before reading final statistics or releasing inputs.

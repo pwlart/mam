@@ -9,18 +9,25 @@
 #include "DelayNode.hpp"
 #include "MeterNode.hpp"
 #include "CompressorNode.hpp"
+#include "SpectralDuckerNode.hpp"
 #include "GraphConfig.hpp"
 #include <unordered_map>
 #include <unordered_set>
 #include <chrono>
+#include <span>
+#include <string_view>
+#include <stdexcept>
+#include <limits>
 
 class Graph {
 public:
   void addNode(std::string id, std::unique_ptr<Node> node) {
+    preparedValid_ = false;
     nodes_.push_back(NodeEntry{std::move(id), std::move(node)});
     topoDirty_ = true;
   }
   void setMixer(std::unique_ptr<MixerNode> mixer) {
+    preparedValid_ = false;
     mixer_ = std::move(mixer);
     mixerInputIds_.clear();
     if (mixer_) {
@@ -28,11 +35,13 @@ public:
     }
   }
   void setConnections(const std::vector<GraphSpec::Connection>& conns) {
+    preparedValid_ = false;
     connections_ = conns;
     topoDirty_ = true;
   }
   // Optional: provide per-node port descriptors parsed from JSON for validation/adaptation
   void setPortDescriptors(const std::vector<NodeSpec>& nodeSpecs) {
+    preparedValid_ = false;
     inPortChannels_.clear(); outPortChannels_.clear(); idToIndex_.clear();
     for (size_t i = 0; i < nodes_.size(); ++i) idToIndex_[nodes_[i].id] = i;
     for (const auto& ns : nodeSpecs) {
@@ -94,7 +103,27 @@ public:
     return 0.0f;
   }
 
+  enum class PreparedProcessStatus {
+    Ok, NotPrepared, InvalidLayout, CapacityExceeded, InvalidContext, NodeFailure
+  };
+
+  // Opt-in preparation/processing boundary. Graph routing uses no allocations
+  // during processPrepared; Node implementations retain their own obligations.
+  // Structural edits and ordinary prepare() invalidate this plan. All edits,
+  // prepare/reset and diagnostics configuration require a stopped processor.
+  // Mutable Node access cannot be tracked: storage/configuration changes or
+  // direct Node::prepare calls require another Graph::prepareRealtime call.
+  // Preparation starts fresh DSP state; zero-frame calls are no-ops, and an
+  // empty prepared graph produces silence. Never mutate concurrently.
+  void prepareRealtime(double sampleRate, uint32_t maxFrames, uint32_t channels);
+  PreparedProcessStatus processPrepared(ProcessContext ctx, std::span<float> output,
+                                       uint32_t channels) noexcept;
+  // Resolves a stable prepared target without constructing strings or scanning
+  // every node. Returns false when unprepared, unknown, or the node throws.
+  bool handlePreparedEvent(const Command& command) noexcept;
+
   void prepare(double sampleRate, uint32_t maxBlock) {
+    preparedValid_ = false;
     for (auto& e : nodes_) e.node->prepare(sampleRate, maxBlock);
     if (statsEnabled_) initStats();
     if (traceEnabled_ && traceEpoch_ == std::chrono::steady_clock::time_point{}) {
@@ -251,6 +280,40 @@ public:
   }
 
 private:
+  struct PreparedRoute {
+    size_t fromIndex;
+    size_t portIndex;
+    uint32_t sourceChannels;
+    uint32_t destinationChannels;
+    float gain;
+  };
+  struct PreparedNode {
+    Node* node = nullptr;
+    DelayNode* delay = nullptr;
+    CompressorNode* compressor = nullptr;
+    MeterNode* meter = nullptr;
+    std::vector<std::vector<float>> ports;
+    std::vector<PreparedRoute> routes;
+    std::vector<float> output;
+    size_t mainPort = std::numeric_limits<size_t>::max();
+    size_t sidechainPort = std::numeric_limits<size_t>::max();
+    float mixGain = 0.0f;
+  };
+  struct PreparedDrySend { size_t fromIndex; float gain; };
+  struct PreparedGraphState {
+    double sampleRate = 0;
+    uint32_t maxFrames = 0;
+    uint32_t channels = 0;
+    std::vector<size_t> order;
+    std::vector<PreparedNode> nodes;
+    std::vector<PreparedDrySend> drySends;
+    std::vector<float> silence;
+    std::unordered_map<std::string_view, size_t> targets;
+  };
+  PreparedGraphState prepared_;
+  bool preparedValid_ = false;
+  void processPreparedValid(ProcessContext ctx, float* output, uint32_t channels);
+
   struct NodeEntry { std::string id; std::unique_ptr<Node> node; };
   std::vector<NodeEntry> nodes_{};
   std::unique_ptr<MixerNode> mixer_{};
@@ -314,7 +377,7 @@ public:
     }
   }
   void enableTrace(const char* path) {
-    if (path && *path) { traceEnabled_ = true; tracePath_ = path; trace_.clear(); traceEpoch_ = std::chrono::steady_clock::time_point{}; }
+    if (path && *path) { preparedValid_ = false; traceEnabled_ = true; tracePath_ = path; trace_.clear(); traceEpoch_ = std::chrono::steady_clock::time_point{}; }
   }
   void flushTrace() {
     if (!traceEnabled_ || tracePath_.empty()) return;
@@ -366,6 +429,7 @@ public:
   }
 
   void rebuildTopology() {
+    preparedValid_ = false;
     insertionOrder_.clear(); insertionOrder_.reserve(nodes_.size());
     for (size_t i = 0; i < nodes_.size(); ++i) insertionOrder_.push_back(i);
     // Map id->index
@@ -436,3 +500,5 @@ private:
     }
   }
 };
+
+#include "PreparedGraph.inl"

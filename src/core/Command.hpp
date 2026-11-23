@@ -4,6 +4,7 @@
 #include <atomic>
 #include <vector>
 #include <cstring>
+#include <span>
 
 using SampleTime = uint64_t;
 using NodeIdStr = const char*; // stored elsewhere; commands copy into a small buffer if needed
@@ -43,6 +44,24 @@ public:
     return (head >= tail) ? (head - tail) : (Capacity - (tail - head));
   }
   constexpr size_t capacity() const { return Capacity - 1; }
+
+  // Consumer only. Snapshot the producer head once, so a producer refilling
+  // freed slots cannot extend this drain. The caller supplies all storage;
+  // events beyond its span or at/after cutoff remain queued, in FIFO order.
+  // Arrivals after the snapshot are intentionally deferred to the next drain.
+  size_t drainUpToBounded(SampleTime cutoff, std::span<Command> out) noexcept {
+    size_t tail = tail_.load(std::memory_order_relaxed);
+    const size_t end = head_.load(std::memory_order_acquire);
+    size_t count = 0;
+    while (tail != end && count < out.size()) {
+      const Command& command = buffer_[tail];
+      if (command.sampleTime >= cutoff) break;
+      out[count++] = command;
+      tail = (tail + 1) % Capacity;
+    }
+    tail_.store(tail, std::memory_order_release);
+    return count;
+  }
 
   // Drain into out vector all commands with sampleTime < cutoff
   void drainUpTo(SampleTime cutoff, std::vector<Command>& out) {

@@ -275,6 +275,8 @@ int runRealtimeSession(const CliOptions& options, std::atomic<bool>& running,
     const double sr = srt.sampleRate();
     uint64_t reportedLate = 0;
     while (running.load()) {
+      srt.pollDiagnostics();
+      if (srt.faultCount() != 0) break;
       const auto late = srt.lateEventCount();
       if (late != reportedLate) {
         std::fprintf(stderr, "[rt-session] late events applied at block start: %llu total\n",
@@ -291,7 +293,7 @@ int runRealtimeSession(const CliOptions& options, std::atomic<bool>& running,
     if (srt.lateEventCount() != reportedLate)
       std::fprintf(stderr, "[rt-session] late events applied at block start: %llu total\n",
                    static_cast<unsigned long long>(srt.lateEventCount()));
-    return 0;
+    return srt.faultCount() == 0 ? 0 : 1;
   } catch (const std::exception& e) { std::fprintf(stderr, "Realtime session failed: %s\n", e.what()); return 1; }
 }
 } // namespace mam::app
