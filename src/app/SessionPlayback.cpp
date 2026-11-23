@@ -8,6 +8,7 @@
 #include "../realtime/RealtimeSessionRenderer.hpp"
 #include "../session/SessionSpec.hpp"
 #include "../session/RackTimeline.hpp"
+#include "../session/SessionFeeding.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -15,14 +16,13 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
-#include <queue>
 #include <thread>
 #include <unordered_map>
 #include <unistd.h>
 
 namespace mam::app {
 int runRealtimeSession(const CliOptions& options, std::atomic<bool>& running,
-                       bool (*stdinReady)(), const char* (*internNodeId)(const std::string&)) {
+                       bool (*stdinReady)()) {
   const auto& sessionPath = options.sessionPath;
   const auto& offlineSr = options.offlineSr;
   const auto& quitAfterSec = options.quitAfterSec;
@@ -93,7 +93,11 @@ int runRealtimeSession(const CliOptions& options, std::atomic<bool>& running,
     if (rackRTs.empty()) { std::fprintf(stderr, "[rt-session] error: no racks\n"); return 1; }
     size_t totalCmds = 0; for (const auto& r : rackRTs) totalCmds += r.baseCmds.size(); if (totalCmds == 0) std::fprintf(stderr, "[rt-session] error: synthesized zero commands across racks\n");
     // Start realtime renderer
-    RealtimeSessionRenderer srt; SpscCommandQueue<16384> cmdQueue;
+    // Destruction order is intentional: audio stops before borrowed command
+    // strings, queue storage or graphs can be destroyed on any exit path.
+    std::unique_ptr<mam::session::EventSchedule> schedule;
+    SpscCommandQueue<16384> cmdQueue;
+    RealtimeSessionRenderer srt;
     srt.setCommandQueue(&cmdQueue); srt.setDiagnostics(printTriggers); srt.setDebug(rtDebugSession); srt.setMeters(printMeters || metersPerNode, metersIntervalSec);
     if (!metricsNdjsonPath.empty()) srt.setMetricsNdjson(metricsNdjsonPath.c_str(), metricsScopeRacks, metricsScopeBuses);
     // Configure session xfaders (if any)
@@ -121,7 +125,7 @@ int runRealtimeSession(const CliOptions& options, std::atomic<bool>& running,
     }
     srt.start(rracks, sess.buses, sess.routes, rtSr, 2);
     // Collect session-level commands (absolute time or musical time, realtime) for initial enqueue
-    std::vector<Command> sessionInitCmds;
+    std::vector<mam::session::ScheduledEvent> sessionEvents;
     if (!sess.commands.empty()) {
       // Use typeByFullNodeId from specs for param name resolution (prefixed ids)
       auto mapParamId = [](const std::string& type, const std::string& name) -> uint16_t {
@@ -173,9 +177,9 @@ int runRealtimeSession(const CliOptions& options, std::atomic<bool>& running,
           std::fprintf(stderr, "[rt-session] warning: command has both timeSec and musical fields, using timeSec\n");
         }
 
-        Command cmd{};
-        cmd.sampleTime = static_cast<uint64_t>(std::llround(resolvedTimeSec * srt.sampleRate()));
-        cmd.nodeId = internNodeId(sc.nodeId);
+        mam::session::ScheduledEvent cmd{};
+        cmd.frame = static_cast<uint64_t>(std::llround(resolvedTimeSec * srt.sampleRate()));
+        cmd.nodeId = sc.nodeId;
         cmd.type = (sc.type == std::string("SetParam")) ? CommandType::SetParam : CommandType::SetParam;
         // Resolve parameter id from name (if provided)
         uint16_t pid = 0;
@@ -187,9 +191,9 @@ int runRealtimeSession(const CliOptions& options, std::atomic<bool>& running,
         cmd.paramId = pid;
         cmd.value = sc.value;
         cmd.rampMs = sc.rampMs;
-        if (!sc.paramName.empty()) cmd.paramNameStr = internNodeId(sc.paramName);
+        if (!sc.paramName.empty()) cmd.paramName = sc.paramName;
         cmd.source = 1; // session
-        sessionInitCmds.push_back(cmd);
+        sessionEvents.push_back(std::move(cmd));
       }
     }
     // Adjust pre-synthesized command timing to actual device sample rate if needed
@@ -228,85 +232,65 @@ int runRealtimeSession(const CliOptions& options, std::atomic<bool>& running,
       }
     }
 
-    // Initial enqueue (globally time-sorted merge across racks + session-level cmds)
-    {
-      // Determine active racks for enqueue (skip muted; if any solo, only solo)
-      bool anySolo = false; for (const auto& rr : sess.racks) if (rr.solo) { anySolo = true; break; }
-      std::vector<bool> activeFlags; activeFlags.reserve(sess.racks.size());
-      for (const auto& rr : sess.racks) activeFlags.push_back(anySolo ? rr.solo : !rr.muted);
-      // Build combined list
-      std::vector<Command> combined; combined.reserve(sessionInitCmds.size() + 1024);
-      // Rack events (seed initial loop and a small horizon of extra loops to avoid early gaps)
-      const uint32_t initAheadLoops = 2;
-      for (size_t i = 0; i < rackRTs.size(); ++i) if (i < activeFlags.size() && activeFlags[i]) {
-        const uint64_t ll = rackRTs[i].loopLen;
-        for (uint32_t rep = 0; rep < 1u + initAheadLoops; ++rep) {
-          const uint64_t offset = (ll > 0) ? (rep * ll) : 0ull;
-          for (const auto& c : rackRTs[i].baseCmds) {
-            Command cmd{}; cmd.sampleTime = c.sampleTime + offset; cmd.nodeId = internNodeId(c.nodeId);
-            cmd.type = (c.type == std::string("Trigger")) ? CommandType::Trigger : (c.type == std::string("SetParam")) ? CommandType::SetParam : CommandType::SetParamRamp;
-            cmd.paramId = c.paramId; cmd.value = c.value; cmd.rampMs = c.rampMs;
-            if (!c.paramName.empty()) cmd.paramNameStr = internNodeId(c.paramName);
-            cmd.source = 0;
-            combined.push_back(cmd);
-          }
-        }
+    std::vector<mam::session::ScheduledEvent> events;
+    for (const auto& rack : rackRTs) {
+      for (const auto& command : rack.baseCmds) {
+        mam::session::ScheduledEvent event;
+        event.frame = command.sampleTime;
+        event.nodeId = command.nodeId;
+        if (command.type == "Trigger") event.type = CommandType::Trigger;
+        else if (command.type == "SetParam") event.type = CommandType::SetParam;
+        else if (command.type == "SetParamRamp") event.type = CommandType::SetParamRamp;
+        else throw std::invalid_argument("Unknown realtime rack command type: " + command.type);
+        event.paramId = command.paramId;
+        event.value = command.value;
+        event.rampMs = command.rampMs;
+        event.paramName = command.paramName;
+        event.periodFrames = rack.loopLen; // No transport means one-shot, not three copies.
+        events.push_back(std::move(event));
       }
-      // Session-level
-      combined.insert(combined.end(), sessionInitCmds.begin(), sessionInitCmds.end());
-      // Sort globally: by time, then nodeId, then type (Set before Trigger), then paramId
-      std::stable_sort(combined.begin(), combined.end(), [](const Command& a, const Command& b){
-        if (a.sampleTime != b.sampleTime) return a.sampleTime < b.sampleTime;
-        const char* an = a.nodeId ? a.nodeId : ""; const char* bn = b.nodeId ? b.nodeId : "";
-        int cmp = std::strcmp(an, bn); if (cmp != 0) return cmp < 0;
-        auto ord = [](CommandType t){ return (t == CommandType::SetParam) ? 0 : (t == CommandType::SetParamRamp ? 1 : 2); };
-        if (ord(a.type) != ord(b.type)) return ord(a.type) < ord(b.type);
-        if (a.paramId != b.paramId) return a.paramId < b.paramId;
-        return a.value < b.value;
-      });
-      size_t totalPushed = 0; for (const auto& ev : combined) { while (running.load() && !cmdQueue.push(ev)) std::this_thread::sleep_for(std::chrono::milliseconds(1)); if (!running.load()) break; totalPushed++; }
-      std::fprintf(stderr, "[rt-session] init enqueued total cmds=%zu (combined)\n", totalPushed);
     }
-    // Start audio after initial enqueue to ensure first triggers are applied in the very first block
+    events.insert(events.end(), std::make_move_iterator(sessionEvents.begin()),
+                  std::make_move_iterator(sessionEvents.end()));
+    schedule = std::make_unique<mam::session::EventSchedule>(std::move(events));
+    const SampleTime lookahead = static_cast<SampleTime>(3.0 * srt.sampleRate());
+    const auto initial = mam::session::primeSessionQueue(*schedule, cmdQueue, lookahead,
+        [&] { return running.load(); });
+    if (initial.stopped || !running.load()) return 0;
+    std::fprintf(stderr, "[rt-session] initial horizon enqueued=%zu capacity=%zu\n",
+                 initial.enqueued, cmdQueue.capacity());
     srt.begin();
-    // Feeder thread
-    std::thread feeder([&cmdQueue, &rackRTs, &srt, &running, internNodeId, sess]() mutable {
-      const uint64_t desiredAhead = static_cast<uint64_t>(3.0 * srt.sampleRate());
-      std::vector<uint64_t> nextOffset(rackRTs.size(), 0ull); for (size_t i = 0; i < rackRTs.size(); ++i) nextOffset[i] = rackRTs[i].loopLen;
-      bool anySolo = false; for (const auto& rr : sess.racks) if (rr.solo) { anySolo = true; break; }
-      std::vector<bool> activeFlags; activeFlags.reserve(sess.racks.size());
-      for (const auto& rr : sess.racks) activeFlags.push_back(anySolo ? rr.solo : !rr.muted);
-      while (running.load()) {
-        const uint64_t now = static_cast<uint64_t>(srt.sampleCounter());
-        // collect eligible racks
-        std::vector<size_t> elig; elig.reserve(rackRTs.size());
-        for (size_t i = 0; i < rackRTs.size(); ++i) if (i < activeFlags.size() && activeFlags[i]) { if (rackRTs[i].loopLen > 0 && nextOffset[i] <= now + desiredAhead) elig.push_back(i); }
-        if (!elig.empty()) {
-          struct Item { uint64_t t; size_t ri; size_t ci; };
-          auto cmp = [](const Item& a, const Item& b){ return a.t > b.t; };
-          std::priority_queue<Item, std::vector<Item>, decltype(cmp)> pq(cmp);
-          for (size_t idx : elig) {
-            if (!rackRTs[idx].baseCmds.empty()) pq.push(Item{rackRTs[idx].baseCmds[0].sampleTime + nextOffset[idx], idx, 0});
-          }
-          while (!pq.empty() && running.load()) {
-            Item it = pq.top(); pq.pop(); const auto& c = rackRTs[it.ri].baseCmds[it.ci];
-            Command cmd{}; cmd.sampleTime = c.sampleTime + nextOffset[it.ri]; cmd.nodeId = internNodeId(c.nodeId); cmd.type = (c.type == std::string("Trigger")) ? CommandType::Trigger : (c.type == std::string("SetParam")) ? CommandType::SetParam : CommandType::SetParamRamp; cmd.paramId = c.paramId; cmd.value = c.value; cmd.rampMs = c.rampMs; if (!c.paramName.empty()) cmd.paramNameStr = internNodeId(c.paramName); cmd.source = 0;
-            while (running.load() && !cmdQueue.push(cmd)) std::this_thread::sleep_for(std::chrono::milliseconds(1)); if (!running.load()) break;
-            const size_t nextCi = it.ci + 1; if (nextCi < rackRTs[it.ri].baseCmds.size()) pq.push(Item{rackRTs[it.ri].baseCmds[nextCi].sampleTime + nextOffset[it.ri], it.ri, nextCi});
-          }
-          for (size_t idx : elig) nextOffset[idx] += rackRTs[idx].loopLen;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // One producer owns the cursor after startup. Never wait inside a pump or
+    // restart loop indices; full queues leave the earliest event pending.
+    std::jthread feeder([&](std::stop_token stop) {
+      const auto keepRunning = [&] { return running.load() && !stop.stop_requested(); };
+      while (keepRunning()) {
+        const auto end = mam::session::lookaheadEnd(srt.sampleCounter(), lookahead);
+        schedule->pump(end, [&](const Command& event) { return cmdQueue.push(event); },
+                       cmdQueue.capacity(), keepRunning);
+        if (keepRunning()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
       }
     });
     // Wait loop with optional quit-after
     const double sr = srt.sampleRate();
+    uint64_t reportedLate = 0;
     while (running.load()) {
+      const auto late = srt.lateEventCount();
+      if (late != reportedLate) {
+        std::fprintf(stderr, "[rt-session] late events applied at block start: %llu total\n",
+                     static_cast<unsigned long long>(late));
+        reportedLate = late;
+      }
       if (quitAfterSec > 0.0) { const double t = static_cast<double>(srt.sampleCounter()) / sr; if (t >= quitAfterSec) { running.store(false); break; } }
       if (stdinReady()) { char buf[4]; (void)read(STDIN_FILENO, buf, sizeof(buf)); running.store(false); break; }
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    if (feeder.joinable()) feeder.join(); srt.stop();
+    feeder.request_stop();
+    feeder.join();
+    srt.stop();
+    if (srt.lateEventCount() != reportedLate)
+      std::fprintf(stderr, "[rt-session] late events applied at block start: %llu total\n",
+                   static_cast<unsigned long long>(srt.lateEventCount()));
     return 0;
   } catch (const std::exception& e) { std::fprintf(stderr, "Realtime session failed: %s\n", e.what()); return 1; }
 }

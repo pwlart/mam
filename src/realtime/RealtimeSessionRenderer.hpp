@@ -17,6 +17,7 @@
 #include "../core/Command.hpp"
 #include "../core/ParamMap.hpp"
 #include "../session/SessionSpec.hpp"
+#include "../session/SessionFeeding.hpp"
 #include "../core/SpectralDuckerNode.hpp"
 #include <cmath>
 
@@ -109,16 +110,18 @@ public:
 
     // Do not start audio yet; allow caller to enqueue initial commands first.
     sampleCounter_.store(0, std::memory_order_relaxed);
+    lateEvents_.store(0, std::memory_order_relaxed);
   }
 
   void begin() {
     if (!unit_.valid()) return;
+    sampleCounter_.store(0, std::memory_order_relaxed);
     OSStatus err = AudioOutputUnitStart(unit_.get());
     if (err != noErr) throw std::runtime_error(std::string("AudioOutputUnitStart failed: ") + osstatusToString(err));
-    sampleCounter_.store(0, std::memory_order_relaxed);
   }
 
-  void stop() { if (metricsFile_) { std::fclose(metricsFile_); metricsFile_ = nullptr; } unit_.release(); }
+  void stop() { unit_.release(); if (metricsFile_) { std::fclose(metricsFile_); metricsFile_ = nullptr; } }
+  uint64_t lateEventCount() const noexcept { return lateEvents_.load(std::memory_order_relaxed); }
   double sampleRate() const noexcept { return sampleRate_; }
   SampleTime sampleCounter() const noexcept { return sampleCounter_.load(std::memory_order_relaxed); }
   void resetSampleCounter() { sampleCounter_.store(0, std::memory_order_relaxed); }
@@ -133,6 +136,7 @@ private:
     // Drain commands up to cutoff
     std::vector<Command> drained; drained.clear();
     if (self->cmdQueue_) self->queueDrain_(self->cmdQueue_, cutoff, drained);
+    mam::session::SessionEventDispatcher eventDispatch(drained, blockStartAbs);
     if (self->debug_) {
       std::fprintf(stderr, "[rt-session] drained=%zu at t=%.3f..%.3f sec\n",
                    drained.size(), static_cast<double>(blockStartAbs)/self->sampleRate_, static_cast<double>(cutoff)/self->sampleRate_);
@@ -153,8 +157,10 @@ private:
     for (size_t si = 0; si + 1 < splits.size(); ++si) {
       const uint32_t segStart = splits[si]; const uint32_t segEnd = splits[si + 1]; const uint32_t segFrames = segEnd - segStart; if (segFrames == 0) continue;
       const SampleTime segAbsStart = blockStartAbs + static_cast<SampleTime>(segStart);
-      // Handle xfader param events (nodeId "xfader:<id>:x") at boundary before node events
-      for (const auto& ev : drained) if (ev.sampleTime == segAbsStart && (ev.type == CommandType::SetParam || ev.type == CommandType::SetParamRamp)) {
+      // Late timestamp groups execute in original order at the first boundary.
+      // On-time groups retain xfader -> parameters -> triggers dispatch.
+      const auto late = eventDispatch.dispatchAt(segAbsStart, [&](const Command& ev) {
+        // Handle xfader param events (nodeId "xfader:<id>:x") before node events.
         if (ev.nodeId) {
           const char* nid = ev.nodeId;
           if (std::strncmp(nid, "xfader:", 8) == 0) {
@@ -174,9 +180,7 @@ private:
             }
           }
         }
-      }
-      // Apply events at segment boundary: SetParam first, then Trigger across all racks
-      for (const auto& ev : drained) if (ev.sampleTime == segAbsStart && (ev.type == CommandType::SetParam || ev.type == CommandType::SetParamRamp)) {
+      }, [&](const Command& ev) {
         // Route events by matching full, prefixed nodeId against graph node ids
         for (const auto& r : self->racks_) if (r.graph) {
           if (!ev.nodeId) continue;
@@ -184,8 +188,7 @@ private:
           r.graph->forEachNode([&](const std::string& id, Node& n){ if (id == fullId) n.handleEvent(ev); });
         }
         if (self->printTriggers_) self->printEvent(ev, segAbsStart);
-      }
-      for (const auto& ev : drained) if (ev.sampleTime == segAbsStart && ev.type == CommandType::Trigger) {
+      }, [&](const Command& ev) {
         // Route events by matching full, prefixed nodeId against graph node ids
         for (const auto& r : self->racks_) if (r.graph) {
           if (!ev.nodeId) continue;
@@ -193,7 +196,8 @@ private:
           r.graph->forEachNode([&](const std::string& id, Node& n){ if (id == fullId) n.handleEvent(ev); });
         }
         if (self->printTriggers_) self->printEvent(ev, segAbsStart);
-      }
+      });
+      if (late) self->lateEvents_.fetch_add(late, std::memory_order_relaxed);
 
       // Zero output segment
       float* outPtr = interleaved + static_cast<size_t>(segStart) * self->channels_;
@@ -420,6 +424,7 @@ private:
   uint32_t channels_ = 2;
   double sampleRate_ = 48000.0;
   std::atomic<SampleTime> sampleCounter_{0};
+  std::atomic<uint64_t> lateEvents_{0};
   void* cmdQueue_ = nullptr; using DrainFn = void(*)(void*, SampleTime, std::vector<Command>&); DrainFn queueDrain_ = nullptr;
   bool printTriggers_ = false;
   bool debug_ = false;

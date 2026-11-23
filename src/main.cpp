@@ -774,7 +774,7 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, onSigInt);
 
   if (!sessionPath.empty() && wavPath.empty())
-    return mam::app::runRealtimeSession(options, gRunning, isStdinReady, internNodeId);
+    return mam::app::runRealtimeSession(options, gRunning, isStdinReady);
 
   // Offline render path to WAV if requested
   if (!wavPath.empty()) {

@@ -39,6 +39,32 @@ free playback, callback allocation bounds or safety of concurrent live edits.
   is appropriate for telemetry only when the declared contract permits it.
   Report refused/late events with counters outside the callback.
 
+### Multi-rack realtime session policy
+
+`EventSchedule` owns the immutable base events and strings, plus one heap cursor
+per event. It must outlive queued commands even after all one-shots are exhausted.
+Events are ordered by absolute frame, target, parameter-before-trigger type,
+parameter ID, value and base insertion order. Repetition does not reset this
+ordering. Zero period means one-shot; uint64 timestamp overflow ends a repetition.
+
+Before audio activation, the exclusive three-second initial horizon must fit
+16,383 entries. Excess density is rejected; no consumer wait occurs. Later pumps
+accept at most 16,383 events per invocation, leave a refused event pending and
+check cancellation. A future one-shot cannot overtake earlier recurring events.
+The producer's 20 ms polling interval is not a deadline guarantee.
+
+Late commands are delivered at the next available block start, preserving their
+original timestamp groups. Crossfader controls and parameters precede triggers
+within each group. Every adjusted command increments a counter reported by the
+control thread. Missed timing is audible degradation, not sample-accurate recovery.
+Stopping joins the producer, stops audio, closes metrics, then releases borrowed
+inputs. Startup failure never activates a partially primed queue.
+
+These guarantees cover the multi-rack session route. The single-graph route has
+not yet adopted this policy. Queue draining and callback execution remain
+unbounded: the existing callback allocates, formats diagnostics and may write
+metrics. The bounded producer does not establish a hard realtime callback.
+
 ## Time, randomness and types
 
 `SampleTime` is a uint64 frame position. Keep frame indices/counts integer;
@@ -47,7 +73,10 @@ linear gain, dB, Hz and channel layouts are distinct quantities. Conversions
 belong at validated boundaries, with explicit rounding and parity tests.
 
 Use sample positions for DSP time; wall-clock time is for deadlines/diagnostics.
-Legacy fractional-step truncation remains an open transport issue. New random
+Legacy fractional-step truncation remains an open transport issue. Musical
+session-command conversion also needs correction when actual device rate differs
+from requested rate: its bar-frame metadata is used before rack rescaling.
+New random
 sources must have node-owned state and explicit seeds; global RNG and `rand()`
 in legacy paths remain migration work. Preserve existing sounds through saved
 fixtures/printed buses before changing a generator or seed derivation.

@@ -6,7 +6,7 @@ See [governance](../GOVERNANCE.md) for how changes are reviewed.
 
 | Priority | Work | Done when |
 | --- | --- | --- |
-| P0 | Bound realtime startup scheduling | Event lists below, at and above queue capacity terminate without lost, duplicated or reordered events; no device needed |
+| P0 | Migrate remaining single-graph realtime feeding | Apply the tested session cursor/admission policy to the separate graph route; saturation, cancellation and ordering tests need no device |
 | P0 | Remove allocation and logging from the callback | Precompiled routing/buffers plus a callback harness detect allocations, waits and I/O; telemetry is bounded |
 | P1 | Own random state per node | Same seed matches across block/thread counts for noisy graphs; reference sound changes are documented |
 | P1 | Rational beat-to-frame timing | Long-duration tempo/swing cases have explicit frame-error bounds; fractional rates no longer accumulate truncation |
@@ -15,6 +15,21 @@ See [governance](../GOVERNANCE.md) for how changes are reviewed.
 | P2 | One parameter/schema authority | Generated docs and validation share units, IDs, ranges and migration rules |
 | P2 | Portable offline core | CoreAudio separated from file/DSP libraries; Linux CI exercises actual offline rendering before claiming support |
 | P2 | Isolated plugin host | Fake plugin fixtures cover crash, hang, late response and architecture mismatch outside the audio callback |
+
+## Completed since 0.1.0
+
+- Extracted CLI parsing, realtime session orchestration and pure rack planning
+  into explicit targets, preserving offline output and existing CLI behavior.
+- Bounded multi-rack session startup/refill with one owned cursor, explicit
+  initial-window rejection, ordered retries and reported late-event recovery.
+  Capacity boundaries, different loop periods, one-shots, cancellation and
+  dispatch are covered without an audio device. This completes the session
+  portion of the startup milestone, not the separate single-graph feeder or
+  callback execution bounds. See [refactoring evidence](REFACTORING.md).
+
+The next engine slice should prepare graph routing and buffers off-thread,
+then add a device-free callback harness that detects allocation and I/O.
+Keep clock/RNG changes separate so their audio differences remain reviewable.
 
 ## Useful first contributions
 

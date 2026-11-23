@@ -8,6 +8,8 @@ add_executable(mam_tests
     test_native_audio.cpp
     test_cli_options.cpp
     test_rack_timeline.cpp
+    test_event_schedule.cpp
+    test_session_feeding.cpp
 )
 target_include_directories(mam_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(mam_tests PRIVATE doctest::doctest mam_render mam_app)

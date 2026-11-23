@@ -45,8 +45,9 @@ tables, run `cmake --build --preset default --target docs`; review
 
 ## What the suite checks
 
-The 0.1.0 suite has 38 native CTest cases: 24 doctest units and 14
-integration/tooling checks. The optional `python` preset adds one CTest entry
+The current development suite has 67 native CTest cases: 53 doctest units and 14
+integration/tooling checks (the released 0.1.0 snapshot had 38 native cases).
+The optional `python` preset adds one CTest entry
 running 69 worker, DSP and DigitalMania pytest cases:
 
 ```sh
@@ -67,6 +68,16 @@ configure `asan` or `ubsan` with `-DMAM_ENABLE_PYTHON_TESTS=ON` before building.
 - Command queues preserve block cutoffs, wraparound and event order, including
   100,000 events sent by a separate producer thread. Head publication now
   uses release/acquire synchronization; this is not a full realtime race audit.
+- CLI parsing and rack planning run without devices; existing defaults, aliases,
+  failure exits, prefixing, solo/mute and legacy transport rounding are covered.
+- The session cursor merges different loop lengths, overlapping tails and future
+  one-shots; ties use deterministic base insertion order. Capacity boundaries
+  include the real 16,383-entry queue, explicit initial-window rejection, retry
+  without loss and cancellation with a producer-thread handshake.
+- Callback event dispatch retains original late timestamp groups, parameter
+  values seen by successive triggers and on-time xfader/parameter/trigger phases.
+  Late counts and delivery occur once. These pure helper tests do not open
+  CoreAudio or establish a callback allocation/deadline bound.
 - Kick synthesis stays finite, decays, responds to velocity and resets
   reproducibly. Meter and SHA1 results have independent known answers.
 - Transport locks precede same-sample triggers; exact 48 kHz beat positions,
