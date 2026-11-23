@@ -6,9 +6,11 @@ add_executable(mam_tests
     test_transport.cpp
     test_audio_file.cpp
     test_native_audio.cpp
+    test_cli_options.cpp
+    test_rack_timeline.cpp
 )
 target_include_directories(mam_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(mam_tests PRIVATE doctest::doctest mam_render)
+target_link_libraries(mam_tests PRIVATE doctest::doctest mam_render mam_app)
 mam_configure_target(mam_tests)
 include(${PROJECT_SOURCE_DIR}/vendor/doctest/cmake/doctest.cmake)
 doctest_discover_tests(mam_tests TEST_PREFIX "unit." PROPERTIES TIMEOUT 30 LABELS unit)

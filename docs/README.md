@@ -11,6 +11,7 @@ Start with [getting started](GETTING-STARTED.md), then render the
 | Integer-frame PCM assembly | [Native stems](NATIVE-STEMS.md) |
 | Ownership, clocks and realtime boundaries | [Engine contract](ENGINE-CONTRACT.md) |
 | Work priorities and acceptance criteria | [Roadmap](ROADMAP.md) |
+| Incremental implementation and verification | [Engine refactoring](REFACTORING.md) |
 | Versioning and publishing | [Releasing](RELEASING.md) |
 | DigitalMania provenance and migration boundaries | [norockstar integration](NOROCKSTAR.md) |
 | Architecture lessons from nodeFlow | [nodeFlow adoption](NODEFLOW-ADOPTION.md) |

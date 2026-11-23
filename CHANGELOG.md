@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Extract CLI parsing and realtime session application code into `mam_app`;
+  extract device-independent rack timelines into `mam_session`.
+- Remove the unreachable duplicate realtime session branch. Preserve existing
+  CLI behavior, transport rounding and offline audio, with characterization tests.
+
 ## 0.1.0 — 2026-11-21
 
 First community snapshot of the existing C++20 engine and optional Python tools.

@@ -76,6 +76,10 @@ add_library(mam_io STATIC
 )
 
 add_library(mam_render INTERFACE)
+add_library(mam_session STATIC src/session/RackTimeline.cpp)
+target_link_libraries(mam_session PUBLIC mam_core)
+add_library(mam_app STATIC src/app/CliOptions.cpp src/app/SessionPlayback.cpp)
+target_link_libraries(mam_app PUBLIC mam_render mam_session)
 add_executable(mam
     src/main.cpp
     src/tools/BuildInfo.cpp
@@ -103,7 +107,7 @@ target_compile_definitions(mam PRIVATE
 )
 
 target_link_libraries(mam_render INTERFACE mam_core mam_dsp mam_io)
-target_link_libraries(mam PUBLIC mam_render)
+target_link_libraries(mam PUBLIC mam_render mam_app)
 
 target_compile_definitions(mam PRIVATE MACOSX)
 # Consumers of the header-based I/O API (including tests) need these too.
@@ -130,7 +134,7 @@ add_custom_command(
 )
 add_custom_target(docs DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/docs/ParamTables.md)
 
-foreach(tgt IN ITEMS mam_core mam_dsp mam_io mam gen_params)
+foreach(tgt IN ITEMS mam_core mam_dsp mam_io mam_session mam_app mam gen_params)
     mam_configure_target(${tgt})
 endforeach()
 
