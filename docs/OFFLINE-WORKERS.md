@@ -65,5 +65,6 @@ Successful audio summation and node DSP are preserved.
 The generated regressions cover queue limits, concurrent admission/shutdown,
 drain and cancellation, exceptions, worker reentry and failure while a sibling
 is blocked. Saved-build comparisons include serial and four-thread topology
-at 44.1 and 48 kHz. These fixtures do not establish scheduler-independent random
-streams: legacy shared RNG remains a separate [roadmap](ROADMAP.md) item.
+at 44.1 and 48 kHz. Native noise now has a separate [seed contract](RANDOMNESS.md)
+and noisy scheduler fixtures. Neither suite establishes universal graph
+determinism or fixes remaining transport/modulation boundaries.

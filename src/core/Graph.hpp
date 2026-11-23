@@ -11,6 +11,7 @@
 #include "CompressorNode.hpp"
 #include "SpectralDuckerNode.hpp"
 #include "GraphConfig.hpp"
+#include "Random.hpp"
 #include <unordered_map>
 #include <unordered_set>
 #include <chrono>
@@ -21,10 +22,27 @@
 
 class Graph {
 public:
-  void addNode(std::string id, std::unique_ptr<Node> node) {
+  // Configuration only, while processing is stopped. A separate local stream
+  // key keeps a session's routing prefix from changing its random identity.
+  void addNode(std::string id, std::unique_ptr<Node> node, std::string randomStreamId = {}) {
     preparedValid_ = false;
-    nodes_.push_back(NodeEntry{std::move(id), std::move(node)});
+    if (randomStreamId.empty()) randomStreamId = id;
+    if (node) node->setRandomSeed(mam::random::deriveNodeSeed(
+        randomSeed_, randomScope_, randomStreamId));
+    nodes_.push_back(NodeEntry{std::move(id), std::move(node), std::move(randomStreamId)});
     topoDirty_ = true;
+  }
+  // Stopped-engine configuration: zero selects each instrument's documented
+  // default stream. Reseeding rewinds RNGs and requires realtime preparation.
+  // This does not reset unrelated DSP, parameter or modulation state.
+  void setRandomSeed(uint32_t root, std::string scope = {}) {
+    preparedValid_ = false;
+    randomSeed_ = root;
+    randomScope_ = std::move(scope);
+    for (auto& entry : nodes_) {
+      if (entry.node) entry.node->setRandomSeed(mam::random::deriveNodeSeed(
+          randomSeed_, randomScope_, entry.randomStreamId));
+    }
   }
   void setMixer(std::unique_ptr<MixerNode> mixer) {
     preparedValid_ = false;
@@ -314,8 +332,14 @@ private:
   bool preparedValid_ = false;
   void processPreparedValid(ProcessContext ctx, float* output, uint32_t channels);
 
-  struct NodeEntry { std::string id; std::unique_ptr<Node> node; };
+  struct NodeEntry {
+    std::string id;
+    std::unique_ptr<Node> node;
+    std::string randomStreamId;
+  };
   std::vector<NodeEntry> nodes_{};
+  uint32_t randomSeed_ = 0;
+  std::string randomScope_;
   std::unique_ptr<MixerNode> mixer_{};
   std::vector<float> temp_{};
   std::vector<GraphSpec::Connection> connections_{};

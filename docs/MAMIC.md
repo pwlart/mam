@@ -4,7 +4,8 @@ This document proposes a modern "virtual chip" for chiptune-style synthesis in M
 
 This is a design document, not a list of implemented guarantees. The current
 `mam_chip` node is experimental and differs from the Python DigitalMania palette.
-See the [roadmap](ROADMAP.md) for shared-RNG and realtime limitations.
+Its implemented noise uses [node-owned seeded streams](RANDOMNESS.md).
+See the [roadmap](ROADMAP.md) for remaining timing and realtime limitations.
 
 We remain license-clean by implementing our own DSP. Optional adapters to third-party cores can be added later (behind flags) for register-accurate playback.
 

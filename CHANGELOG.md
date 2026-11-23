@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Give native chip/clap instruments owned random streams and stable per-node
+  seed derivation. Apply CLI/JSON seeds consistently to graphs and session racks;
+  validate the full uint32 range. Chip noise and explicitly seeded clap output
+  intentionally change; unseeded clap and noise-free synthesis remain compatible.
 - Bound offline worker admission, with explicit full/closed errors, task futures,
   drain or cancel-pending shutdown and serialized joining. Propagate node failures
   only after all accepted siblings settle; discard partial output and rebuild

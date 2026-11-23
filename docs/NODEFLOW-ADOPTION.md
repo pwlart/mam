@@ -15,7 +15,7 @@ discipline while keeping a sample clock and strict realtime constraints.
 | Core owns state; adapters stay outside (`08_ARCHITECTURE`, `core/04`) | Separate graph/control ownership, offline workers, device I/O and callback processing | Runtime contract documented; larger core isolation remains planned |
 | A run owns its data; failure publishes nothing (`core/02`, `10_ENGINE`) | Immutable render plans; completed artifacts only after validation; future graph swaps at block boundaries | File-job completion markers already exist; live graph swaps remain planned |
 | Queue policy must be possible and observable (`11_CONCURRENCY` §5) | Reject or stage startup overflow; preserve ordered triggers; report lateness; coalesce meters only | Both feeders use bounded cursors; callback drains and telemetry have fixed limits and regressions |
-| Deterministic clock and owned state (`core/01` §8, `core/05`) | Integer sample clock, per-node seeded RNG, serial/parallel/block-size parity | Sample-frame stem path verified; legacy RNG/transport still need work |
+| Deterministic clock and owned state (`core/01` §8, `core/05`) | Integer sample clock, per-node seeded RNG, serial/parallel/block-size parity | Stem placement and owned native noise tested; rational transport still needs work |
 | Stable diagnostics and explicit recovery (`05_ERROR_REPORTING`, `core/03`) | Category/code/location plus user message; distinguish invalid input, timeout and comparison failure | Roadmap; current CLI messages are not a unified diagnostic contract |
 | Debug assertions, TSan and isolated test layers (`core/05`, `11_CONCURRENCY` §6) | Separate debug/race presets; keep fixture tests independent of devices and production media | Debug/TSan presets implemented; existing suite passes |
 | Build-time identity, including no-Git exports (`core/05`, `00_CHANGELOG`) | JSON build metadata; current revision/dirty state; same metadata in native result manifests | Implemented and regression-tested |
@@ -68,11 +68,12 @@ device was opened to reproduce a playback failure.
    General C allocation, locks, custom-node behavior and physical-device
    deadlines still need broader validation. Legacy offline `Graph::process`
    retains its dynamic maps/vectors; it is not used by prepared callbacks.
-3. **Shared randomness undermines replay.** `src/core/Random.hpp` exposes a
-   global `std::mt19937` and documents concurrent mutation as unsafe;
-   `MamChipNode::process()` calls global `rand()`. A seed alone cannot guarantee
-   identical per-node streams under a different scheduler. The current parity
-   fixtures are not proof for every noisy rack.
+3. **Native noise ownership — implemented with explicit migration.** The old
+   CLI seed configured an unused `mt19937`; chip consumed global C `rand()` and
+   clap ignored the seed. Both now own their streams, with stable scope/ID seed
+   derivation and graph/session propagation. Noisy fixtures compare partitions
+   and worker counts. Chip and explicitly seeded clap samples intentionally
+   change; unseeded clap samples remain exact. See [randomness](RANDOMNESS.md).
 4. **Offline worker lifecycle — bounded and tested.** `JobPool` now rejects
    full/closed admission, returns completion futures and defines drain versus
    cancel-pending shutdown. Concurrent joins are serialized; task exceptions
@@ -92,7 +93,7 @@ device was opened to reproduce a playback failure.
 | --- | --- | --- |
 | 1 | Session and single-graph bounded feeding implemented | Capacity, finite horizons, retries, ordering and cancellation have device-free regressions |
 | 2 | Prepared callback routing/buffers and bounded telemetry implemented; expand verification | First/variable-block C++ allocation/output harness passes for supplied fixtures; broader node/device/wait/deadline coverage and node re-entry guard remain |
-| 3 | Per-node seed/state and rational absolute beat→frame conversion | Same seed gives same node audio across block/thread counts; long-duration frame-error bounds; retain legacy golden comparisons |
+| 3 | Per-node native noise implemented; rational beat→frame conversion remains | Owned noisy-node fixtures match across partitions/workers; long-duration timing bounds and broader modulated-graph equivalence remain open |
 | 4 | Bounded offline lifecycle implemented; unify structured diagnostics next | Full/closed admission, drain/cancel-pending, concurrent join and sibling-failure tests pass; diagnostic categories/locations and external-process timeouts remain separate |
 | 5 | One authoritative node/parameter schema and explicit format migration | Generated docs match schemas; unknown/narrowing/invalid-unit inputs fail clearly; old fixtures migrate intentionally |
 | 6 | Plugin/device adapter with its own execution process and capability handshake | Real-format fake plugin supports crash, hang, late response and architecture mismatch tests; no plugin work in callback |

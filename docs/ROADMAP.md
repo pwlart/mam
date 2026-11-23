@@ -7,11 +7,11 @@ See [governance](../GOVERNANCE.md) for how changes are reviewed.
 | Priority | Work | Done when |
 | --- | --- | --- |
 | P0 | Extend realtime coverage and live-device verification | Exercise every supported node/configuration, C allocators, waits and deadline behavior; validate CoreAudio negotiation and fault recovery on hardware |
-| P1 | Own random state per node | Same seed matches across block/thread counts for noisy graphs; reference sound changes are documented |
 | P1 | Rational beat-to-frame timing | Long-duration tempo/swing cases have explicit frame-error bounds; fractional rates no longer accumulate truncation |
 | P1 | Stable structured failure diagnostics | Categorize invalid input, task failure and cancellation consistently; report locations and declare safe retry boundaries |
 | P1 | Apply graph validation consistently offline | Prepared realtime graphs reject cycles/unknown links; replace the remaining offline insertion-order fallback with an explicit policy |
 | P1 | Repair manual session crossfader automation | Activate valid targets in a separate behavior patch with event/DSP comparisons; preserve the established LFO path |
+| P2 | Correct legacy clap noise bias | Compare the existing approximately [-1,0) mapping with bipolar/DC-corrected output in a separate sound migration |
 | P2 | One parameter/schema authority | Generated docs and validation share units, IDs, ranges and migration rules |
 | P2 | Portable offline core | CoreAudio separated from file/DSP libraries; Linux CI exercises actual offline rendering before claiming support |
 | P2 | Isolated plugin host | Fake plugin fixtures cover crash, hang, late response and architecture mismatch outside the audio callback |
@@ -35,9 +35,13 @@ See [governance](../GOVERNANCE.md) for how changes are reviewed.
   drain/cancel-pending shutdown and joined ownership. Parallel render failures
   settle sibling tasks before releasing inputs; retries rebuild render state.
   See [worker lifecycle](OFFLINE-WORKERS.md).
+- Node-owned native noise, stable per-node seed derivation and graph/session
+  seed propagation. Invalid seed values fail explicitly; reset and scheduler
+  comparisons use generated noisy fixtures. See [seed migration](RANDOMNESS.md)
+  for intentional chip/seeded-clap changes and preserved unseeded clap behavior.
 
 The prepared paths do not establish universal realtime safety or a hardware
-deadline guarantee. Keep clock/RNG and manual crossfader changes separate so
+deadline guarantee. Keep timing and manual crossfader changes separate so
 their audio differences remain reviewable. Worker cancellation does not interrupt
 running code or guarantee a shutdown deadline; broader node/device coverage and
 structured diagnostics remain open.

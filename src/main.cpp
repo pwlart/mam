@@ -42,7 +42,6 @@
 #include "core/MixerNode.hpp"
 #include "instruments/kick/KickNode.hpp"
 #include "core/ParamMap.hpp"
-#include "core/Random.hpp"
 #include "core/GraphUtils.hpp"
 #include "core/SchemaValidate.hpp"
 #include "core/Sha1.hpp"
@@ -770,7 +769,7 @@ int main(int argc, char** argv) {
       try {
         SessionSpec sess = loadSessionSpecFromJsonFile(sessionPath);
         if (offlineSr > 0.0) sess.sampleRate = sr;
-        SessionRuntime runtime; runtime.loadFromSpec(sess);
+        SessionRuntime runtime; runtime.loadFromSpec(sess, randomSeedOverride);
 
         // Handle loop-aware duration planning
         uint32_t maxLoops = 1;
@@ -833,8 +832,7 @@ int main(int argc, char** argv) {
         GraphSpec spec = loadGraphSpecFromJsonFile(graphPath);
         warnSidechainConnectivity(spec);
         warnDrySuppression(spec);
-        if (randomSeedOverride != 0) setGlobalSeed(randomSeedOverride);
-        else if (spec.randomSeed != 0) setGlobalSeed(spec.randomSeed);
+        graph.setRandomSeed(randomSeedOverride != 0 ? randomSeedOverride : spec.randomSeed);
         for (const auto& ns : spec.nodes) {
           auto node = createNodeFromSpec(ns);
           if (node) graph.addNode(ns.id, std::move(node));
@@ -865,6 +863,7 @@ int main(int argc, char** argv) {
     } else {
       KickParams p = params;
       p.loop = false;
+      graph.setRandomSeed(randomSeedOverride);
       graph.addNode("kick_default", std::make_unique<KickNode>(p));
     }
     std::vector<float> interleaved;
@@ -872,8 +871,6 @@ int main(int argc, char** argv) {
     if (!graphPath.empty()) {
       try {
         GraphSpec spec2 = loadGraphSpecFromJsonFile(graphPath);
-        if (randomSeedOverride != 0) setGlobalSeed(randomSeedOverride);
-        else if (spec2.randomSeed != 0) setGlobalSeed(spec2.randomSeed);
         // Synthesize commands from transport, if present
         std::vector<GraphSpec::CommandSpec> cmds = spec2.commands;
         if (spec2.hasTransport) {
@@ -1162,8 +1159,7 @@ int main(int argc, char** argv) {
       realtimeSpec = loadGraphSpecFromJsonFile(graphPath);
       const auto& spec = realtimeSpec;
       warnDrySuppression(spec);
-      if (randomSeedOverride != 0) setGlobalSeed(randomSeedOverride);
-      else if (spec.randomSeed != 0) setGlobalSeed(spec.randomSeed);
+      graph.setRandomSeed(randomSeedOverride != 0 ? randomSeedOverride : spec.randomSeed);
       for (const auto& ns : spec.nodes) {
         auto node = createNodeFromSpec(ns);
         if (node) graph.addNode(ns.id, std::move(node));
@@ -1188,6 +1184,7 @@ int main(int argc, char** argv) {
       return 1;
     }
   } else {
+    graph.setRandomSeed(randomSeedOverride);
     graph.addNode("kick_default", std::make_unique<KickNode>(params));
   }
 

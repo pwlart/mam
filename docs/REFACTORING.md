@@ -118,9 +118,34 @@ retain normalized output/exit codes. Source/history secret scans and repository
 hygiene pass. A read-only CoreAudio probe exposed no devices to this process,
 so no physical playback or device-setting changes were attempted.
 
+## Sixth slice: owned native randomness
+
+The previous seed option initialized an unused global `mt19937`; audible chip
+noise used C `rand()` and clap always used a fixed private seed. Both native
+noise instruments now own a versioned xorshift stream. A stable root/rack/node
+derivation supplies their initial states independently of worker order, graph
+insertion order and file paths. Root zero keeps instrument defaults. All graph
+and session builders apply CLI-over-JSON precedence; live routing prefixes do
+not alter local random identity. Seed inputs reject invalid types and overflow.
+
+This intentionally changes chip noise and nonzero-seeded clap audio. The
+unseeded clap waveform and non-noisy instruments are preserved. The clap's
+existing negative-biased conversion remains a separate DSP correction. Node
+reset replays its configured stream; unchanged session loop/reset differences
+still apply. See [seed migration](RANDOMNESS.md) for algorithms and limits.
+
+Validation: 148 native CTest cases pass in default, debug, TSan, ASan and UBSan;
+the Python preset passes 149 entries including 69 pytest cases. The final
+concurrent-render test also passes after its test-only barrier cleanup adjustment
+in default/debug. Ten saved-build renders retain format/timing: six expected
+compatibility cases are bit-exact and four expected noise migrations differ.
+Eight CLI comparisons retain normalized output/exit codes apart from the updated
+seed help. Hygiene, links, whitespace and local source/history secret scans pass.
+No production audio or device playback is part of this verification.
+
 ## Remaining scope
 
-Broader node/device coverage, rational transport time, per-node randomness,
+Broader node/device coverage, rational transport time, clap noise bias,
 manual crossfader automation and structured diagnostics remain roadmap items.
 Musical session commands still have a clock-conversion gap if the actual device
 rate differs from the requested rate. These changes do not rerender accepted

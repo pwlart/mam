@@ -45,7 +45,7 @@ tables, run `cmake --build --preset default --target docs`; review
 
 ## What the suite checks
 
-The current development suite has 128 native CTest cases: 114 doctest units and 14
+The current development suite has 148 native CTest cases: 133 doctest units and 15
 integration/tooling checks (the released 0.1.0 snapshot had 38 native cases).
 The optional `python` preset adds one CTest entry
 running 69 worker, DSP and DigitalMania pytest cases:
@@ -91,6 +91,12 @@ configure `asan` or `ubsan` with `-DMAM_ENABLE_PYTHON_TESTS=ON` before building.
   futures and nested cleanup reentry use handshakes and bounded test deadlines.
   Render failures must settle active/pending siblings, clear partial audio and
   support retry with a changed graph, block size or channel layout.
+- Native noise tests lock integer/hash vectors and the unseeded clap waveform;
+  multi-chip/clap fixtures compare reset/replay, independent concurrent graphs,
+  stable node/rack identity, 17/64/256/1024-frame partitions and serial/four-worker
+  rendering at 44.1/48 kHz. CLI audio tests check real graph/session seed precedence,
+  while input tests reject malformed/overflow seeds. The prepared instrument
+  harness observes zero C++ allocation/free for the measured noisy blocks.
 - Kick synthesis stays finite, decays, responds to velocity and resets
   reproducibly. Meter and SHA1 results have independent known answers.
 - Transport locks precede same-sample triggers; exact 48 kHz beat positions,
@@ -161,8 +167,9 @@ sound is musically better. Preserve a separate human listening review for musica
 MAM synthesizes/processes graphs and has a separate native streaming PCM stem
 renderer. Live/graph-integrated file-player nodes and a native Draft 2020 JSON
 Schema validator remain future work. The optional Python companion provides
-explicit offline schema preflight. Shared random sources and the legacy transport's
-fractional-frame truncation need separate work before arbitrary parallel stem
-sessions can be claimed deterministic and aligned. The selected Python ST/YM
+explicit offline schema preflight. Native noise ownership is covered by its
+[seed contract](RANDOMNESS.md); legacy transport truncation, modulation/reset
+semantics and summation order still prevent a universal determinism claim.
+The selected Python ST/YM
 chip sound is not reproduced by `mam_chip`; retain printed approved buses.
 See [DigitalMania integration](NOROCKSTAR.md).

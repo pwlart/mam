@@ -63,13 +63,14 @@ struct SessionRuntime {
     outRmsDb = toDb(rms);
   }
 
-  void loadFromSpec(const SessionSpec& s) {
+  void loadFromSpec(const SessionSpec& s, uint32_t seedOverride = 0) {
     sampleRate = s.sampleRate; channels = s.channels;
     racks.clear(); racks.reserve(s.racks.size());
     buses.clear(); routes.clear();
     for (const auto& rr : s.racks) {
       GraphSpec gs = loadGraphSpecFromJsonFile(rr.path);
       Graph g;
+      g.setRandomSeed(seedOverride != 0 ? seedOverride : gs.randomSeed, rr.id);
       for (const auto& ns : gs.nodes) {
         auto node = createNodeFromSpec(ns);
         if (node) g.addNode(ns.id, std::move(node));

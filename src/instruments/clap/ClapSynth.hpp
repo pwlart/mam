@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include "../../core/Random.hpp"
 
 struct ClapParams {
   float ampDecayMs = 180.0f;
@@ -14,6 +15,7 @@ public:
   explicit ClapSynth(const ClapParams& params, double sampleRate);
   void setSampleRate(double sr);
   double sampleRate() const;
+  void setRandomSeed(uint32_t seed) noexcept;
   void reset();
   void trigger();
   void trigger(float velocity);
@@ -30,6 +32,6 @@ private:
   uint64_t framesUntilNextTrigger_ = 0;
   bool active_ = false;
   bool triggeredOnce_ = false;
-  uint32_t rngState_ = 0x12345678u;
+  mam::random::NoiseRandom noise_;
   float velocity_ = 1.0f; // 0..1, applied to output
 };

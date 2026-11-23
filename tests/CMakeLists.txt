@@ -14,6 +14,9 @@ add_executable(mam_tests
     test_bounded_callback_queue.cpp
     test_job_pool.cpp
     test_offline_worker_failures.cpp
+    test_random.cpp
+    test_random_rendering.cpp
+    test_seed_config.cpp
 )
 target_include_directories(mam_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(mam_tests PRIVATE doctest::doctest mam_render mam_app)
@@ -31,6 +34,7 @@ add_executable(mam_realtime_tests
     test_graph_callback.cpp
     test_prepared_session.cpp
     test_realtime_allocations.cpp
+    test_random_realtime.cpp
 )
 target_include_directories(mam_realtime_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(mam_realtime_tests PRIVATE doctest::doctest mam_render mam_app)
@@ -59,6 +63,10 @@ add_test(NAME cli.strict_schema_unavailable COMMAND ${CMAKE_COMMAND}
     -DWORK=${CMAKE_CURRENT_BINARY_DIR}/strict-schema
     -P ${CMAKE_CURRENT_SOURCE_DIR}/strict_schema.cmake)
 set_tests_properties(cli.strict_schema_unavailable PROPERTIES TIMEOUT 15 LABELS integration)
+add_test(NAME cli.random_seed_audio COMMAND ${CMAKE_COMMAND}
+    -DMAM=$<TARGET_FILE:mam> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/random-seed-cli
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/random_seed_cli.cmake)
+set_tests_properties(cli.random_seed_audio PROPERTIES TIMEOUT 60 LABELS integration)
 add_test(NAME vendor.doctest_integrity COMMAND ${CMAKE_COMMAND}
     -DROOT=${PROJECT_SOURCE_DIR}/vendor/doctest
     -P ${CMAKE_CURRENT_SOURCE_DIR}/vendor_integrity.cmake)

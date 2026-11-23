@@ -72,7 +72,7 @@ the measured scope.
 These checks cover the supplied fixtures and observed C++ allocations and
 stdout/stderr writes. They do not intercept every C allocator, file operation,
 lock or system call; they do not certify arbitrary custom nodes or deadline
-compliance. Live device/driver behavior, shared RNG, fractional transport timing
+compliance. Live device/driver behavior, fractional transport timing
 and storage-mutating live edits remain separate concerns. See
 [testing](TESTING.md), [execution contracts](ENGINE-CONTRACT.md) and
 [the roadmap](ROADMAP.md) for exact scope.

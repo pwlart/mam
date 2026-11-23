@@ -82,10 +82,12 @@ Use sample positions for DSP time; wall-clock time is for deadlines/diagnostics.
 Legacy fractional-step truncation remains an open transport issue. Musical
 session-command conversion also needs correction when actual device rate differs
 from requested rate: its bar-frame metadata is used before rack rescaling.
-New random
-sources must have node-owned state and explicit seeds; global RNG and `rand()`
-in legacy paths remain migration work. Preserve existing sounds through saved
-fixtures/printed buses before changing a generator or seed derivation.
+Native chip/clap noise now has node-owned state and a versioned root/scope/ID
+seed derivation. CLI seeds apply to graphs and every session rack; reset replays
+the configured stream. Chip noise and explicitly seeded clap output intentionally
+change from the formerly ineffective seed behavior. Unseeded clap samples remain
+compatible. See [randomness](RANDOMNESS.md) for exact algorithms, reset/loop
+boundaries and migration evidence. Preserve printed buses for historical sound.
 
 ## Failure and completion
 

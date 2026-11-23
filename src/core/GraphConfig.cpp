@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include "ParamMap.hpp"
 #include <nlohmann/json.hpp>
 
@@ -74,7 +75,19 @@ GraphSpec loadGraphSpecFromJsonFile(const std::string& path) {
   if (j.contains("version")) spec.version = j.at("version").get<int>();
   if (j.contains("sampleRate")) spec.sampleRate = j.at("sampleRate").get<uint32_t>();
   if (j.contains("channels")) spec.channels = j.at("channels").get<uint32_t>();
-  if (j.contains("randomSeed")) spec.randomSeed = j.at("randomSeed").get<uint32_t>();
+  if (j.contains("randomSeed")) {
+    const auto& seed = j.at("randomSeed");
+    constexpr auto maximum = std::numeric_limits<uint32_t>::max();
+    // nlohmann's numeric conversion permits truncation and unsigned wrapping;
+    // check the original numeric category and range before converting.
+    if (!seed.is_number_integer() ||
+        (seed.is_number_unsigned()
+            ? seed.get<json::number_unsigned_t>() > maximum
+            : seed.get<json::number_integer_t>() < 0 || seed.get<json::number_integer_t>() > maximum)) {
+      throw std::runtime_error("randomSeed must be an integer in 0..4294967295");
+    }
+    spec.randomSeed = seed.get<uint32_t>();
+  }
 
   if (j.contains("nodes")) {
     for (const auto& n : j.at("nodes")) {

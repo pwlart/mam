@@ -195,3 +195,30 @@ TEST_CASE("CLI parsing records progress and seed settings without changing runti
   CHECK(gOfflineProgressEnabled == enabled);
   CHECK(gOfflineSummaryEnabled == summary);
 }
+
+TEST_CASE("CLI random seed accepts the complete uint32 decimal range") {
+  for (const auto& [text, expected] : std::vector<std::pair<const char*, uint32_t>>{
+      {"0", 0u}, {"1", 1u}, {"00012", 12u}, {"2147483648", 2147483648u}, {"4294967295", 4294967295u}}) {
+    INFO(text);
+    const auto parsed = parse({"--random-seed", text});
+    REQUIRE_FALSE(parsed.exitCode.has_value());
+    CHECK(parsed.diagnostics.empty());
+    CHECK(parsed.options.randomSeedOverride == expected);
+  }
+  const auto unspecified = parse({"--random-seed", "12", "--random-seed", "0"});
+  REQUIRE_FALSE(unspecified.exitCode.has_value());
+  CHECK(unspecified.options.randomSeedOverride == 0);
+}
+
+TEST_CASE("CLI random seed rejects malformed and overflowing arguments without coercion") {
+  for (const auto* text : {"", "-1", "-0", "+1", " 1", "1 ", "\t1", "1\n", "1.0", "1e2",
+      "0x10", "12trailing", "--wav", "true", "4294967296", "18446744073709551615",
+      "99999999999999999999999999999999999999"}) {
+    INFO(text);
+    const auto parsed = parse({"--random-seed", "12", "--random-seed", text});
+    REQUIRE(parsed.exitCode.has_value());
+    CHECK(*parsed.exitCode == 1);
+    CHECK(parsed.diagnostics == "Invalid --random-seed: expected a decimal integer in 0..4294967295\n");
+    CHECK(parsed.options.randomSeedOverride == 12);
+  }
+}

@@ -7,7 +7,7 @@
     "version": { "type": "integer", "const": 1 },
     "sampleRate": { "type": "number", "minimum": 8000 },
     "channels": { "type": "integer", "minimum": 1 },
-    "randomSeed": { "type": "integer", "minimum": 0 },
+    "randomSeed": { "type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Unsigned 32-bit seed written as an integer token (no fraction or exponent). 0 leaves the seed unspecified; a nonzero CLI --random-seed overrides this value." },
     "connections": {
       "type": "array",
       "items": {

@@ -6,13 +6,14 @@ ClapSynth::ClapSynth(const ClapParams& params, double sampleRate)
 
 void ClapSynth::setSampleRate(double sr) { sampleRate_ = sr; }
 double ClapSynth::sampleRate() const { return sampleRate_; }
+void ClapSynth::setRandomSeed(uint32_t seed) noexcept { noise_.setSeed(seed); }
 
 void ClapSynth::reset() {
   tSec_ = 0.0;
   active_ = false;
   triggeredOnce_ = false;
   framesUntilNextTrigger_ = 0;
-  rngState_ = 0x12345678u;
+  noise_.reset();
 }
 
 void ClapSynth::trigger() {
@@ -27,11 +28,9 @@ void ClapSynth::trigger(float velocity) {
 }
 
 inline float ClapSynth::nextNoise() {
-  // xorshift32
-  uint32_t x = rngState_;
-  x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-  rngState_ = x;
-  // map to [-1,1]
+  const uint32_t x = noise_.nextUint32();
+  // Preserve the legacy approximately [-1,0) conversion for sound compatibility.
+  // Correcting its DC/range is a separate, explicitly audible migration.
   return ((x >> 9) * (1.0f / 8388607.5f)) - 1.0f;
 }
 

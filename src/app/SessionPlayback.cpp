@@ -57,9 +57,10 @@ int runRealtimeSession(const CliOptions& options, std::atomic<bool>& running,
       std::fprintf(stderr, "[rt-session] rack-config id=%s muted=%s solo=%s\n", rr.id.c_str(), rr.muted?"true":"false", rr.solo?"true":"false");
       GraphSpec gs = loadGraphSpecFromJsonFile(rr.path);
       auto g = std::make_unique<Graph>();
+      g->setRandomSeed(options.randomSeedOverride != 0 ? options.randomSeedOverride : gs.randomSeed, rr.id);
       for (const auto& ns : gs.nodes) {
         auto node = createNodeFromSpec(ns);
-        if (node) g->addNode(rr.id + ":" + ns.id, std::move(node));
+        if (node) g->addNode(rr.id + ":" + ns.id, std::move(node), ns.id);
         // Accumulate type mapping for session-level param-name resolution
         typeByFullNodeId.emplace(rr.id + ":" + ns.id, ns.type);
       }

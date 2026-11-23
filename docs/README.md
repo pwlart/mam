@@ -14,6 +14,7 @@ Start with [getting started](GETTING-STARTED.md), then render the
 | Incremental implementation and verification | [Engine refactoring](REFACTORING.md) |
 | Prepared callbacks, capacity and diagnostics | [Prepared realtime processing](PREPARED-REALTIME.md) |
 | Offline admission, cancellation and joined cleanup | [Worker lifecycle](OFFLINE-WORKERS.md) |
+| Native noise seeds and sound migration | [Randomness](RANDOMNESS.md) |
 | Versioning and publishing | [Releasing](RELEASING.md) |
 | DigitalMania provenance and migration boundaries | [norockstar integration](NOROCKSTAR.md) |
 | Architecture lessons from nodeFlow | [nodeFlow adoption](NODEFLOW-ADOPTION.md) |

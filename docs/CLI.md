@@ -38,6 +38,8 @@ preflight. Neither a local job nor a plugin path is an untrusted-code sandbox.
 ## Reproducibility
 
 Record the recipe, source hashes, seed, sample rate and build information.
-For native PCM assembly, ordered Float32 summation is tested. Legacy graph
-RNG and fractional transport timing are still broader reproducibility limits.
-A seed alone is not proof that every graph matches across thread/block counts.
+For native PCM assembly, ordered Float32 summation is tested. Native chip/clap
+noise now uses [owned streams and explicit seed precedence](RANDOMNESS.md),
+including session racks. Fractional timing, modulation/reset semantics and
+summation order remain broader limits; a seed is not proof of arbitrary graph
+equivalence across thread/block counts.

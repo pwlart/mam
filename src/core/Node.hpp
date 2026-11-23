@@ -15,6 +15,9 @@ class Node {
 public:
   virtual ~Node() = default;
   virtual const char* name() const = 0;
+  // Configuration only: call while processing is stopped. Noisy nodes own the
+  // configured stream and rewind it on reset; zero selects instrument defaults.
+  virtual void setRandomSeed(uint32_t) {}
   virtual void prepare(double sampleRate, uint32_t maxBlock) = 0;
   virtual void reset() = 0;
   virtual void process(ProcessContext ctx, float* interleavedOut, uint32_t channels) = 0;

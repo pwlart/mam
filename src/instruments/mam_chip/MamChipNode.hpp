@@ -3,6 +3,7 @@
 #include "../../core/Node.hpp"
 #include "../../core/ParamMap.hpp"
 #include "../../core/ParameterRegistry.hpp"
+#include "../../core/Random.hpp"
 #include <cmath>
 
 class MamChipNode : public Node {
@@ -10,13 +11,15 @@ public:
   MamChipNode() { initParams(); }
 
   const char* name() const override { return "mam_chip"; }
+  void setRandomSeed(uint32_t seed) noexcept override { noise_.setSeed(seed); }
 
   void prepare(double sampleRate, uint32_t /*maxBlock*/) override {
     sr_ = sampleRate > 0.0 ? sampleRate : 48000.0;
     params_.prepare(sr_);
     phase_ = 0.0f; env_ = 0.0f; envStage_ = Stage::Idle;
+    noise_.reset();
   }
-  void reset() override { phase_ = 0.0f; env_ = 0.0f; envStage_ = Stage::Idle; }
+  void reset() override { phase_ = 0.0f; env_ = 0.0f; envStage_ = Stage::Idle; noise_.reset(); }
 
   void handleEvent(const Command& cmd) override {
     if (cmd.type == CommandType::Trigger) {
@@ -47,8 +50,8 @@ public:
       // Envelope (simple ADSR)
       stepEnvelope();
       float osc = generateWave(wave, pw);
-      // White noise (very simple)
-      float nz = (static_cast<float>(rand()) / static_cast<float>(RAND_MAX)) * 2.0f - 1.0f;
+      // Keep one owned noise draw per frame, including idle/noiseMix-zero frames.
+      const float nz = noise_.nextBipolar();
       float s = (1.0f - noiseMix) * osc + noiseMix * nz;
       s *= env_ * gain;
       if (channels == 1) {
@@ -90,6 +93,7 @@ private:
   }
 
   double sr_ = 48000.0;
+  mam::random::NoiseRandom noise_;
   ParameterRegistry<32> params_;
   float phase_ = 0.0f;
   float env_ = 0.0f, envT_ = 0.0f;

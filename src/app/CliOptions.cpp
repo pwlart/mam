@@ -1,5 +1,6 @@
 #include "CliOptions.hpp"
 #include <algorithm>
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 
@@ -46,7 +47,7 @@ void printCliUsage(const char* exe, std::FILE* diagnostics) {
                "  --export-mermaid-graph path.json     Print graph (nodes/connections) as Mermaid flowchart to stdout\n"
                "  --loop-minutes M   Repeat transport to reach at least M minutes (offline)\n"
                "  --loop-seconds S   Repeat transport to reach at least S seconds (offline)\n"
-               "  --random-seed N    Override JSON randomSeed for deterministic randomness (0 to skip)\n"
+               "  --random-seed N    Override graph/session rack seeds (decimal 0..4294967295; 0 = use JSON)\n"
                "  --topo-scheduler topo|baseline   Select topo offline scheduler (alias: --offline-scheduler)\n"
                "  --topo-offline-blocks N          Topo scheduler block size (alias: --offline-block)\n"
                "  --topo-threads N                 Level-parallel jobs (0=serial)\n"
@@ -239,7 +240,15 @@ std::optional<int> parseCliOptions(int argc, const char* const argv[], CliOption
       options.rtDebugSession = true;
     } else if (std::strcmp(a, "--random-seed") == 0) {
       if (!need(1)) return 1;
-      options.randomSeedOverride = static_cast<uint32_t>(std::max(0, std::atoi(argv[++i])));
+      const char* first = argv[++i];
+      const char* last = first + std::strlen(first);
+      uint32_t seed = 0;
+      const auto parsed = std::from_chars(first, last, seed, 10);
+      if (parsed.ec != std::errc{} || parsed.ptr != last) {
+        std::fprintf(diagnostics, "Invalid --random-seed: expected a decimal integer in 0..4294967295\n");
+        return 1;
+      }
+      options.randomSeedOverride = seed;
     } else if (std::strcmp(a, "--progress-ms") == 0) {
       if (!need(1)) return 1;
       options.offlineProgressMs = std::atoi(argv[++i]);

@@ -10,6 +10,7 @@ class ClapNode : public Node {
 public:
   explicit ClapNode(const ClapParams& p) : synth_(p, 48000.0) {}
   const char* name() const override { return "ClapNode"; }
+  void setRandomSeed(uint32_t seed) noexcept override { synth_.setRandomSeed(seed); }
   bool addLfo(uint16_t id, ModLfo::Wave wave, float freqHz, float phase01) { return mod_.addLfo(id, wave, freqHz, phase01); }
   bool addRoute(uint16_t sourceId, uint16_t destParamId, float depth, float offset = 0.0f) { return mod_.addRoute(sourceId, destParamId, depth, offset); }
   bool addLfoFreqRoute(uint16_t sourceId, uint16_t lfoId, float depth, float offset = 0.0f) { return mod_.addLfoFreqRoute(sourceId, lfoId, depth, offset); }
