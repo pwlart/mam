@@ -25,6 +25,15 @@ mam_configure_target(mam_tests)
 include(${PROJECT_SOURCE_DIR}/vendor/doctest/cmake/doctest.cmake)
 doctest_discover_tests(mam_tests TEST_PREFIX "unit." PROPERTIES TIMEOUT 30 LABELS unit)
 
+# Keep these consumers independent of mam_render/mam_app: their link closure
+# checks the owning library instead of accidentally borrowing aggregate edges.
+add_executable(mam_node_factory_consumer node_factory_consumer.cpp)
+target_include_directories(mam_node_factory_consumer PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(mam_node_factory_consumer PRIVATE mam_nodes)
+mam_configure_target(mam_node_factory_consumer)
+add_test(NAME linkage.node_factory COMMAND mam_node_factory_consumer)
+set_tests_properties(linkage.node_factory PROPERTIES TIMEOUT 10 LABELS integration)
+
 # The C++ allocation probes override new/delete only in this dedicated harness.
 # Device-free renderBlock is the same path used by the CoreAudio callbacks.
 add_executable(mam_realtime_tests

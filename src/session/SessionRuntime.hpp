@@ -8,6 +8,7 @@
 #include "../core/Graph.hpp"
 #include "../core/GraphConfig.hpp"
 #include "../core/NodeFactory.hpp"
+#include "../core/ParamMap.hpp"
 #include "../offline/OfflineGraphRenderer.hpp"
 #include "../offline/OfflineTimelineRenderer.hpp" // for renderGraphWithCommands
 #include "../offline/TransportGenerator.hpp"

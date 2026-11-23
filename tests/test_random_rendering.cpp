@@ -15,6 +15,7 @@
 #include <numeric>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 namespace {
 constexpr uint32_t noiseFrames = 6149;
