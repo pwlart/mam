@@ -174,6 +174,39 @@ The debug, TSan, Python and release presets were not rerun for this preparation
 slice, which adds no concurrency or Python behavior. Physical audio playback and
 production music are outside this verification; no accepted master was rerendered.
 
+## Eighth slice: compiled factory and session assembly
+
+`NodeFactory` now exposes a small declaration header; the original construction
+body lives in `NodeFactory.cpp`, owned by `mam_nodes`. This assembly target links
+core, DSP and I/O explicitly. The factory no longer brings concrete instruments,
+JSON parsing and audio-file framework headers into every caller. The extraction
+also replaces two hidden include dependencies with explicit ParamMap and macOS
+`unistd.h` includes where they are used.
+
+The five substantial `SessionRuntime` methods now live in `SessionRuntime.cpp`,
+owned by `mam_session_runtime`. Their bodies, public value types, defaults and
+implicit move/destruction behavior are unchanged. `mam_session` remains the
+pure rack-planning target; neither implementation library depends on application
+or render aggregates. Normal `mam_render` consumers receive both libraries;
+direct users must link their owning target. See [C++ boundaries](CPP-BOUNDARIES.md).
+
+Two standalone executables include the public headers first and link only the
+owning library, checking construction/destruction and all moved session methods
+without borrowing application dependencies. The factory checkpoint passes 157
+native cases; the complete extraction passes 158 in default, ASan and UBSan.
+The release/LTO configuration builds successfully. Twenty generated renders
+(ten graph and ten session) match saved 61b6cf4 output bit-for-bit at 44.1/48 kHz.
+Four worker comparisons and eight CLI comparisons retain existing behavior;
+source/history secret scans, repository hygiene and whitespace checks pass.
+
+The session comparisons exercise gain/offset, solo/mute, spectral bus and loop
+paths. Compatibility is not a correctness claim for legacy loop placement:
+review found an existing frame/interleaved-sample indexing error and dropped
+remainder frames in `renderOfflineWithLoop`. Both remain unchanged and are
+recorded as a separate [roadmap issue](ROADMAP.md). No production music,
+physical playback, timing integration or Python behavior is part of this slice;
+debug, TSan and Python presets were not rerun.
+
 ## Remaining scope
 
 Broader node/device coverage, rational transport time, clap noise bias,

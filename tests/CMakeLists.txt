@@ -34,6 +34,13 @@ mam_configure_target(mam_node_factory_consumer)
 add_test(NAME linkage.node_factory COMMAND mam_node_factory_consumer)
 set_tests_properties(linkage.node_factory PROPERTIES TIMEOUT 10 LABELS integration)
 
+add_executable(mam_session_runtime_consumer session_runtime_consumer.cpp)
+target_include_directories(mam_session_runtime_consumer PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(mam_session_runtime_consumer PRIVATE mam_session_runtime)
+mam_configure_target(mam_session_runtime_consumer)
+add_test(NAME linkage.session_runtime COMMAND mam_session_runtime_consumer)
+set_tests_properties(linkage.session_runtime PROPERTIES TIMEOUT 10 LABELS integration)
+
 # The C++ allocation probes override new/delete only in this dedicated harness.
 # Device-free renderBlock is the same path used by the CoreAudio callbacks.
 add_executable(mam_realtime_tests

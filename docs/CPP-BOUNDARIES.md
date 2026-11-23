@@ -43,10 +43,13 @@ performance claim separately from the organizational change.
    `TransportGenerator.cpp` holds the existing implementation in `mam_core`.
    This first mechanical extraction preserves timing, event ordering, ties and
    existing limitations. It is not the rational-clock migration.
-2. **Factory and offline session assembly.** Move non-template node creation,
-   JSON parameter handling and `SessionRuntime` loading/rendering out of their
-   headers. Establish their real DSP and I/O dependencies before assigning the
-   new sources to targets. Keep independently testable rack planning separate.
+2. **Factory and offline session assembly.** `NodeFactory.cpp` now owns node
+   creation and its dispatch through instrument parameter factories in
+   `mam_nodes`. `SessionRuntime.cpp` owns session loading, metering, planning
+   and rendering in `mam_session_runtime`. Their public headers retain types,
+   declarations and small setters. `mam_session` remains the independently
+   testable rack-planning target. These extractions preserve existing behavior,
+   including the known session timing and loop-assembly limitations.
 3. **Graph implementation.** Move preparation, topology, event lookup and
    routing methods from `Graph.hpp` and `PreparedGraph.inl` into `Graph.cpp`.
    Preserve prepared-state invalidation, move behavior and the exact ordering
@@ -64,38 +67,56 @@ recombining application orchestration with DSP.
 
 ## Target ownership
 
-These are dependency rules, not a claim that all target separation is complete.
-Listing a header in a CMake target does not give that target ownership of every
-inline implementation compiled by consumers.
+The factory and offline session boundaries are implemented; Graph and realtime
+extractions remain open. Listing a header in a CMake target does not give that
+target ownership of every inline implementation compiled by consumers.
 
 | Responsibility | Ownership and allowed dependencies |
 | --- | --- |
 | Timing mathematics and basic engine contracts | Pure timing/core code; no device, file, renderer or application dependency |
 | Instruments and effects | DSP implementation with core contracts; no CLI or device activation |
 | Graph preparation and routing | Core/graph implementation with the node and effect contracts it uses |
-| Node factory | Assembly target depending on core, DSP and required I/O implementations |
-| Offline session assembly | Session/render assembly depending on graph, factory and offline rendering |
+| Node factory | `mam_nodes`: public `mam_core`; private `mam_dsp` and `mam_io` |
+| Pure rack planning | `mam_session`: public `mam_core`; no session runtime or factory dependency |
+| Offline session assembly | `mam_session_runtime`: public `mam_core`; private `mam_nodes` |
 | File and device operations | Explicit I/O/platform targets; keep framework dependencies here |
 | CLI and playback orchestration | Application targets depending on the required assembly/platform layers |
 
 The factory is not pure core merely because its header lives under `src/core`.
-Today `NodeFactory.hpp` includes `WiretapNode.hpp`, which reaches
-`AudioFileWriter` and platform I/O, as well as concrete instrument factories.
-Moving that code into `mam_core` without restructuring dependencies would make
-the supposed core library depend on DSP and I/O. Prefer a compiled assembly
-target linking those implementations, and make its consumers depend on it.
+`NodeFactory.cpp` includes `WiretapNode.hpp`, which reaches `AudioFileWriter`
+and platform I/O, as well as concrete instrument factories. `mam_nodes` owns
+those implementation dependencies; they no longer enter callers through the
+factory header. `NodeFactory.hpp` includes complete `Node` and `NodeSpec` types
+so a caller can construct a specification and destroy the returned
+`std::unique_ptr<Node>` without including concrete instruments.
 
-Similarly, `mam_session` currently compiles pure rack planning. Adding all of
-`SessionRuntime` to it changes its dependency contract: either declare the new
-assembly dependencies or keep a separate planning target. Avoid a cycle where
-core depends on a renderer that already depends on core.
+`mam_session_runtime` compiles offline assembly separately from pure rack
+planning. Its public header still needs complete Graph, GraphSpec and SessionSpec
+types because its exposed members contain them by value. Neither assembly
+target depends on `mam_render` or `mam_app`; the aggregate and application
+depend on these libraries. Keep that direction when extracting more code.
 
-`mam_render` can remain an `INTERFACE` convenience aggregate. Compiled sources
-belong to their owning implementation targets, not that aggregate. Apply the
+`mam_render` remains an `INTERFACE` convenience aggregate containing core, DSP,
+I/O, nodes and session runtime. Compiled sources belong to their owning
+implementation targets, not that aggregate. Apply the
 shared warnings, sanitizer and language settings to every new compiled target.
 Use `PUBLIC` dependencies when the public interface requires them and `PRIVATE`
 for implementation-only dependencies; static-library consumers must still
 receive the link dependencies needed to resolve implementations.
+
+External factory callers must now link `mam_nodes`; callers of the moved
+`SessionRuntime` methods must link `mam_session_runtime`. Existing consumers
+of `mam_render` receive both. Including either public header alone no longer
+supplies these implementations; there is no header-only implementation promise.
+
+The `linkage.node_factory` and `linkage.session_runtime` checks compile their
+public header first and link only the owning library. The factory consumer
+constructs and destroys instruments and a disabled wiretap, and checks the
+unknown-type result. The session consumer calls every moved method, including
+header default arguments, with an empty session and an independent meter
+fixture. These checks expose missing transitive link dependencies that broader
+application test targets could conceal. Generated nonempty session and saved
+PCM comparisons provide separate behavior evidence.
 
 A portable mathematics target and its tests do not make the application or
 offline renderer portable. Retain the normal application's platform checks
@@ -104,6 +125,11 @@ verified on another platform.
 
 ## Ownership and lifetime checks during moves
 
+- Preserve public member order, nested types and method signatures when moving
+  implementation. Keep default arguments on the public declarations and omit
+  them from out-of-line definitions. The factory/session extractions do not
+  introduce a private implementation, destructor or new move policy; consumers
+  rebuild and link the owning libraries.
 - An out-of-line destructor used with an incomplete `unique_ptr` pointee needs
   its definition where the pointee is complete. Declaring a destructor also
   suppresses implicit move generation. Preserve Graph's required move

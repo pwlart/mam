@@ -45,7 +45,7 @@ tables, run `cmake --build --preset default --target docs`; review
 
 ## What the suite checks
 
-The current development suite has 156 native CTest cases: 141 doctest units and 15
+The current development suite has 158 native CTest cases: 141 doctest units and 17
 integration/tooling checks (the released 0.1.0 snapshot had 38 native cases).
 The optional `python` preset adds one CTest entry
 running 69 worker, DSP and DigitalMania pytest cases:
@@ -70,6 +70,11 @@ configure `asan` or `ubsan` with `-DMAM_ENABLE_PYTHON_TESTS=ON` before building.
   uses release/acquire synchronization; this is not a full realtime race audit.
 - CLI parsing and rack planning run without devices; existing defaults, aliases,
   failure exits, prefixing, solo/mute and legacy transport rounding are covered.
+- Standalone factory and session consumers include their public header first
+  and link only `mam_nodes` or `mam_session_runtime`. They exercise construction,
+  destruction, moved methods and default arguments without borrowing the
+  application's aggregate dependencies. Wiretap is disabled; no file/device is
+  opened. These link checks complement the generated render comparisons.
 - The session cursor merges different loop lengths, overlapping tails and future
   one-shots; ties use deterministic base insertion order. Capacity boundaries
   include the real 16,383-entry queue, explicit initial-window rejection, retry

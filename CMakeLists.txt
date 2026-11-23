@@ -56,7 +56,6 @@ add_library(mam_core STATIC
     src/core/SchemaValidate.hpp
     src/core/SchemaValidate.cpp
     src/session/SessionSpec.hpp
-    src/session/SessionRuntime.hpp
     src/realtime/RealtimeSessionRenderer.hpp
 )
 
@@ -81,6 +80,8 @@ add_library(mam_nodes STATIC src/core/NodeFactory.hpp src/core/NodeFactory.cpp)
 target_link_libraries(mam_nodes PUBLIC mam_core PRIVATE mam_dsp mam_io)
 add_library(mam_session STATIC src/session/RackTimeline.cpp)
 target_link_libraries(mam_session PUBLIC mam_core)
+add_library(mam_session_runtime STATIC src/session/SessionRuntime.hpp src/session/SessionRuntime.cpp)
+target_link_libraries(mam_session_runtime PUBLIC mam_core PRIVATE mam_nodes)
 add_library(mam_app STATIC src/app/CliOptions.cpp src/app/SessionPlayback.cpp)
 target_link_libraries(mam_app PUBLIC mam_render mam_session)
 add_executable(mam
@@ -109,7 +110,7 @@ target_compile_definitions(mam PRIVATE
     MAM_DEFAULT_PYTHON_TOOLS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/python"
 )
 
-target_link_libraries(mam_render INTERFACE mam_core mam_dsp mam_io mam_nodes)
+target_link_libraries(mam_render INTERFACE mam_core mam_dsp mam_io mam_nodes mam_session_runtime)
 target_link_libraries(mam PUBLIC mam_render mam_app)
 
 target_compile_definitions(mam PRIVATE MACOSX)
@@ -137,7 +138,7 @@ add_custom_command(
 )
 add_custom_target(docs DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/docs/ParamTables.md)
 
-foreach(tgt IN ITEMS mam_core mam_dsp mam_io mam_nodes mam_session mam_app mam gen_params)
+foreach(tgt IN ITEMS mam_core mam_dsp mam_io mam_nodes mam_session mam_session_runtime mam_app mam gen_params)
     mam_configure_target(${tgt})
 endforeach()
 
