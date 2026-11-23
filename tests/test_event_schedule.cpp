@@ -182,6 +182,76 @@ TEST_CASE("session cursor owns queued target strings after input lifetime ends")
   CHECK(std::strcmp(accepted.nodeId, "rack:temporary-node") == 0);
 }
 
+TEST_CASE("session cursor merges finite repeats and independent one shots") {
+  auto a = event(2, "A", 4);
+  a.endFrameExclusive = 14; // 2, 6, 10; never 14.
+  auto b = event(0, "B", 5);
+  b.endFrameExclusive = 11; // 0, 5, 10.
+  auto oneShot = event(12, "one-shot");
+  oneShot.endFrameExclusive = 13;
+  EventSchedule schedule({a, b, oneShot, event(20, "later-one-shot")});
+  std::vector<std::pair<SampleTime, std::string>> actual;
+  const auto sink = [&](const Command& command) {
+    actual.emplace_back(command.sampleTime, command.nodeId);
+    return true;
+  };
+  CHECK(schedule.baseEventCount() == 4);
+  CHECK(schedule.pump(11, sink, 100).enqueued == 6);
+  CHECK(schedule.nextFrame() == 12);
+  const auto final = schedule.pump(25, sink, 100);
+  CHECK(final.enqueued == 2);
+  CHECK_FALSE(final.pending);
+  const std::vector<std::pair<SampleTime, std::string>> expected{
+      {0, "B"}, {2, "A"}, {5, "B"}, {6, "A"},
+      {10, "A"}, {10, "B"}, {12, "one-shot"}, {20, "later-one-shot"}};
+  CHECK(actual == expected);
+  CHECK_FALSE(schedule.nextFrame().has_value());
+}
+
+TEST_CASE("session cursor excludes initial occurrences at or beyond finite ends") {
+  auto empty = event(0, "empty", 1);
+  empty.endFrameExclusive = 0;
+  auto atEnd = event(8, "at-end", 2);
+  atEnd.endFrameExclusive = 8;
+  auto afterEnd = event(9, "after-end");
+  afterEnd.endFrameExclusive = 8;
+  auto oneShotAtEnd = event(8, "one-shot-at-end");
+  oneShotAtEnd.endFrameExclusive = 8;
+  EventSchedule schedule({empty, atEnd, afterEnd, oneShotAtEnd});
+  CHECK(schedule.baseEventCount() == 4);
+  CHECK_FALSE(schedule.nextFrame().has_value());
+  size_t accepted = 0;
+  const auto result = schedule.pump(100, [&](const Command&) { ++accepted; return true; }, 100);
+  CHECK(accepted == 0);
+  CHECK(result.enqueued == 0);
+  CHECK_FALSE(result.pending);
+}
+
+TEST_CASE("session cursor finite bounds avoid overflow with mixed near-limit events") {
+  const SampleTime maximum = std::numeric_limits<SampleTime>::max();
+  auto a = event(maximum - 8, "A", 3);
+  a.endFrameExclusive = maximum - 1;
+  auto b = event(maximum - 7, "B", 2);
+  b.endFrameExclusive = maximum - 3;
+  EventSchedule schedule({a, b, event(maximum - 6, "C", 6),
+                          event(maximum - 4, "one-shot"),
+                          event(maximum - 1, "last-one-shot"),
+                          event(maximum, "unreachable-endpoint")});
+  std::vector<std::pair<SampleTime, std::string>> actual;
+  const auto result = schedule.pump(maximum, [&](const Command& command) {
+    actual.emplace_back(command.sampleTime, command.nodeId);
+    return true;
+  }, 100);
+  const std::vector<std::pair<SampleTime, std::string>> expected{
+      {maximum - 8, "A"}, {maximum - 7, "B"}, {maximum - 6, "C"},
+      {maximum - 5, "A"}, {maximum - 5, "B"}, {maximum - 4, "one-shot"},
+      {maximum - 2, "A"}, {maximum - 1, "last-one-shot"}};
+  CHECK(actual == expected);
+  CHECK(result.enqueued == expected.size());
+  CHECK_FALSE(result.pending);
+  CHECK_FALSE(schedule.nextFrame().has_value());
+}
+
 TEST_CASE("session cursor prevents repetition overflow and handles empty schedules") {
   const SampleTime maximum = std::numeric_limits<SampleTime>::max();
   EventSchedule schedule({event(maximum - 4, "end", 3)});
@@ -197,7 +267,8 @@ TEST_CASE("session cursor prevents repetition overflow and handles empty schedul
   CHECK_FALSE(empty.nextFrame().has_value());
   EventSchedule atLimit({event(maximum, "exclusive-limit")});
   CHECK(atLimit.pump(maximum, [](const Command&) { return true; }, 10).enqueued == 0);
-  CHECK(atLimit.nextFrame() == maximum);
+  // The default end is also exclusive: an unreachable endpoint is not pending.
+  CHECK_FALSE(atLimit.nextFrame().has_value());
 }
 
 TEST_CASE("session cursor validates bounded input and comparison values") {

@@ -20,7 +20,6 @@
 #include <unistd.h>
 #include <sys/select.h>
 #include <cassert>
-#include <mutex>
 #include <sstream>
 #include "instruments/kick/KickSynth.hpp"
 #include "offline/OfflineRenderer.hpp"
@@ -51,6 +50,8 @@
 #include "tools/BuildInfo.hpp"
 #include "app/CliOptions.hpp"
 #include "app/SessionPlayback.hpp"
+#include "app/GraphPlayback.hpp"
+#include "session/SessionFeeding.hpp"
 #include "offline/StemRenderer.hpp"
 
 // The shared instrument implementation serves realtime and offline paths.
@@ -187,12 +188,6 @@ static std::string generateMermaidForGraph(const GraphSpec& g) {
 }
 
 
-static const char* dupStr(const std::string& s) {
-  char* p = static_cast<char*>(std::malloc(s.size() + 1));
-  if (!p) return nullptr;
-  std::memcpy(p, s.c_str(), s.size() + 1);
-  return p;
-}
 // Connectivity advisories (non-fatal): e.g., compressor without sidechain key
 static void warnSidechainConnectivity(const GraphSpec& spec) {
   std::unordered_map<std::string, std::string> nodeType;
@@ -230,18 +225,6 @@ static void warnDrySuppression(const GraphSpec& spec) {
   }
 }
 
-
-// Intern nodeId strings to avoid per-command heap churn/leaks in realtime enqueue paths
-static const char* internNodeId(const std::string& s) {
-  static std::unordered_map<std::string, const char*> pool;
-  static std::mutex m;
-  std::lock_guard<std::mutex> lock(m);
-  auto it = pool.find(s);
-  if (it != pool.end()) return it->second;
-  const char* p = dupStr(s);
-  pool.emplace(s, p);
-  return p;
-}
 
 static int listNodesGraphJson(const std::string& path) {
   try {
@@ -1161,29 +1144,23 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  // Realtime renderer path via session OR graph
+  // The graph and owned schedule outlive the queue, renderer and feeder.
   Graph graph;
-  std::thread transportFeeder;
-  uint64_t rtLoopLen = 0; // frames
-  if (!sessionPath.empty()) {
-    // Defer: the session realtime branch is handled below in this control flow.
-  } else {
-    if (rackPath.size() && graphPath.empty()) graphPath = rackPath;
-    if (!graphPath.empty()) {
+  GraphSpec realtimeSpec;
+  if (rackPath.size() && graphPath.empty()) graphPath = rackPath;
+  if (!graphPath.empty()) {
     std::fprintf(stderr, "[rt-graph] starting: path=%s\n", graphPath.c_str());
     try {
       if (schemaStrict) {
         std::string diag;
-        const std::string schemaPath = std::string("docs/schema.graph.v1.json");
-        int vs = validateJsonWithDraft2020(graphPath, schemaPath, diag);
-        if (vs != 0) { std::fprintf(stderr, "Schema validation failed: %s\n", diag.c_str()); return 1; }
+        const int status = validateJsonWithDraft2020(graphPath, "docs/schema.graph.v1.json", diag);
+        if (status != 0) {
+          std::fprintf(stderr, "Schema validation failed: %s\n", diag.c_str());
+          return 1;
+        }
       }
-      GraphSpec spec = loadGraphSpecFromJsonFile(graphPath);
-      if (printLatency) {
-        const double rtsr = 48000.0; // realtime graph uses fixed start sr below
-        const uint64_t preroll = computeGraphPrerollSamples(spec, static_cast<uint32_t>(rtsr + 0.5));
-        std::fprintf(stderr, "Graph preroll: %.3f ms\n", 1000.0 * static_cast<double>(preroll) / rtsr);
-      }
+      realtimeSpec = loadGraphSpecFromJsonFile(graphPath);
+      const auto& spec = realtimeSpec;
       warnDrySuppression(spec);
       if (randomSeedOverride != 0) setGlobalSeed(randomSeedOverride);
       else if (spec.randomSeed != 0) setGlobalSeed(spec.randomSeed);
@@ -1192,326 +1169,120 @@ int main(int argc, char** argv) {
         if (node) graph.addNode(ns.id, std::move(node));
       }
       if (spec.hasMixer) {
-        std::vector<MixerChannel> chans;
-        for (const auto& inp : spec.mixer.inputs) {
-          MixerChannel mc; mc.id = inp.id; mc.gain = inp.gainPercent * (1.0f/100.0f);
-          chans.push_back(mc);
+        std::vector<MixerChannel> channels;
+        for (const auto& input : spec.mixer.inputs) {
+          MixerChannel channel;
+          channel.id = input.id;
+          channel.gain = input.gainPercent * 0.01f;
+          channels.push_back(channel);
         }
-        const float master = spec.mixer.masterPercent * (1.0f/100.0f);
-        graph.setMixer(std::make_unique<MixerNode>(std::move(chans), master, spec.mixer.softClip));
+        graph.setMixer(std::make_unique<MixerNode>(std::move(channels),
+            spec.mixer.masterPercent * 0.01f, spec.mixer.softClip));
       }
-      if (!spec.connections.empty()) {
-        graph.setConnections(spec.connections);
-      }
-      // Provide port descriptors to graph (for future adapters)
+      if (!spec.connections.empty()) graph.setConnections(spec.connections);
       graph.setPortDescriptors(spec.nodes);
       if (metersPerNode) graph.enableStats(true);
       if (cpuStats || cpuStatsPerNode) graph.enableCpuStats(true);
-    } catch (const std::exception& e) {
-      std::fprintf(stderr, "Failed to load graph JSON: %s\n", e.what());
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "Failed to load graph JSON: %s\n", error.what());
       return 1;
     }
-    } else {
-    graph.addNode("kick_default", std::make_unique<KickNode>(params));
-    }
-  }
-  RealtimeGraphRenderer rt;
-  SpscCommandQueue<2048> cmdQueue;
-    rt.setCommandQueue(&cmdQueue);
-    rt.setCmdQueueDebug(rtDebugFeed);
-  // Try to infer transport resolution and bpm from graph for diagnostics; defaults: res=16, bpm=120
-  uint32_t diagRes = 16;
-  double diagBpm = 120.0;
-  if (rackPath.size() && graphPath.empty()) graphPath = rackPath;
-  if (rackPath.size() && graphPath.empty()) graphPath = rackPath;
-  if (!graphPath.empty()) {
-    try {
-      GraphSpec tmp = loadGraphSpecFromJsonFile(graphPath);
-      if (tmp.hasTransport) {
-        if (tmp.transport.resolution > 0) diagRes = tmp.transport.resolution;
-        if (tmp.transport.bpm > 0.0f) diagBpm = tmp.transport.bpm;
-      }
-    } catch (...) {}
-  }
-  rt.setDiagnostics(printTriggers, diagBpm, diagRes);
-  rt.setDiagLoop(rtLoopLen);
-  rt.setTransportEmitEnabled(false); // all triggers come from pre-enqueued commands for parity
-  try {
-    rt.start(graph, 48000.0, 2);
-  } catch (const std::exception& e) {
-    std::fprintf(stderr, "Realtime start failed: %s\n", e.what());
-    return 1;
-  }
-
-  // Always allow Ctrl-C or Enter to stop in realtime
-  // If a graph was provided and it has commands/transport, enqueue them (demo horizon)
-    if (rackPath.size() && graphPath.empty()) graphPath = rackPath;
-    if (!graphPath.empty()) {
-    try {
-      GraphSpec spec = loadGraphSpecFromJsonFile(graphPath);
-      // Build initial command set (explicit + transport)
-      std::vector<GraphSpec::CommandSpec> baseCmds = spec.commands;
-      if (spec.hasTransport) {
-        // Generate a multi-loop chunk in one shot to avoid boundary duplication/rounding artifacts
-        GraphSpec::Transport chunk = spec.transport;
-        const uint32_t baseBarsRT = (spec.transport.lengthBars > 0) ? spec.transport.lengthBars : 1u;
-        const uint32_t chunkLoops = 1u; // single-loop; we'll replicate explicitly
-        chunk.lengthBars = baseBarsRT * chunkLoops;
-        auto gen = generateCommandsFromTransport(chunk, static_cast<uint32_t>(rt.sampleRate() + 0.5));
-        baseCmds.insert(baseCmds.end(), gen.begin(), gen.end());
-      }
-      // Resolve named params to IDs based on node type and prefix nodeIds with rack id
-      {
-        std::unordered_map<std::string, std::string> nodeIdToType;
-        for (const auto& ns : spec.nodes) nodeIdToType.emplace(ns.id, ns.type);
-        auto mapParam = [](const std::string& type, const std::string& name) -> uint16_t {
-          if (type == std::string("kick")) return resolveParamIdByName(kKickParamMap, name);
-          if (type == std::string("clap")) return resolveParamIdByName(kClapParamMap, name);
-          if (type == std::string("tb303_ext")) return resolveParamIdByName(kTb303ParamMap, name);
-          if (type == std::string("mam_chip")) return resolveParamIdByName(kMamChipParamMap, name);
-          return 0;
-        };
-        for (auto& c : baseCmds) {
-          if (c.paramId == 0 && !c.paramName.empty()) {
-            auto it = nodeIdToType.find(c.nodeId);
-            const std::string nodeType = (it != nodeIdToType.end()) ? it->second : std::string();
-            c.paramId = mapParam(nodeType, c.paramName);
-          }
-        }
-      }
-      // Sort by time to preserve draining order in the SPSC queue
-      std::sort(baseCmds.begin(), baseCmds.end(), [](const auto& a, const auto& b){ return a.sampleTime < b.sampleTime; });
-      // Repeat transport loop up to horizon (quit-after or ~60s)
-      // Horizon is exact multiple of loopLen to avoid a boundary block without triggers
-      uint64_t loopsAhead = 16;
-      if (quitAfterSec > 0.0 && rtLoopLen > 0) {
-        loopsAhead = static_cast<uint64_t>(
-          std::ceil((quitAfterSec * rt.sampleRate()) / static_cast<double>(rtLoopLen))
-        );
-      }
-      uint64_t horizonFrames = (rtLoopLen > 0)
-        ? (loopsAhead * rtLoopLen)
-        : static_cast<uint64_t>(60.0 * rt.sampleRate());
-      // Determine exact loop length in frames from transport (bars × framesPerBar).
-      // Using exact bar length avoids gaps/overlaps at loop boundaries, ensuring continuous groove.
-      uint64_t loopLen = 0;
-      if (spec.hasTransport) {
-        const double bpm = (spec.transport.bpm > 0.0) ? spec.transport.bpm : 120.0;
-        const double secPerBeat = 60.0 / bpm;
-        const double secPerBar = 4.0 * secPerBeat;
-        const uint64_t framesPerBar = static_cast<uint64_t>(secPerBar * rt.sampleRate() + 0.5);
-        const uint32_t bars = (spec.transport.lengthBars > 0) ? spec.transport.lengthBars : 1u;
-        loopLen = framesPerBar * static_cast<uint64_t>(bars);
-      }
-      if (loopLen == 0) {
-        // Fallback: derive from last event if transport is absent
-        for (const auto& c : baseCmds) if (c.sampleTime > loopLen) loopLen = c.sampleTime;
-      }
-      rtLoopLen = loopLen;
-      // Provide precise loop length to realtime diagnostics so Loop N prints at exact boundaries
-      rt.setDiagLoop(rtLoopLen);
-      std::vector<GraphSpec::CommandSpec> realtimeCmds;
-      const bool startFeeder = (spec.hasTransport && loopLen > 0);
-      // Use baseCmds as-is if they already span the initial horizon; otherwise replicate to cover it
-      uint64_t baseSpan = 0; for (const auto& c : baseCmds) if (c.sampleTime > baseSpan) baseSpan = c.sampleTime;
-      // For realtime with feeder, enqueue exactly one full loop now; feeder extends horizon later
-      if (startFeeder) {
-        realtimeCmds = baseCmds; // single loop
   } else {
-        if (baseSpan >= horizonFrames) {
-          realtimeCmds = baseCmds;
-        } else {
-          for (uint64_t offset = 0; offset < horizonFrames; offset += loopLen) {
-            for (auto c : baseCmds) { c.sampleTime += offset; realtimeCmds.push_back(c); }
-          }
-        }
-      }
-      // Defensive stable sort to ensure deterministic same-sample ordering
-      std::stable_sort(realtimeCmds.begin(), realtimeCmds.end(), [](const auto& a, const auto& b){
-        if (a.sampleTime != b.sampleTime) return a.sampleTime < b.sampleTime;
-        if (a.nodeId != b.nodeId) return a.nodeId < b.nodeId;
-        if (a.type != b.type) return a.type < b.type;
-        if (a.paramId != b.paramId) return a.paramId < b.paramId;
-        return a.value < b.value;
-      });
-      // Trim only in non-feeder mode; with feeder we need the full first loop queued
-      if (!startFeeder) {
-        realtimeCmds.erase(std::remove_if(realtimeCmds.begin(), realtimeCmds.end(), [&](const auto& c){ return c.sampleTime >= horizonFrames; }), realtimeCmds.end());
-      }
-      // startFeeder already computed above
-      if (!startFeeder) {
-        for (const auto& c : realtimeCmds) {
-          Command cmd{};
-          cmd.sampleTime = c.sampleTime;
-          cmd.nodeId = internNodeId(c.nodeId);
-          if (c.type == std::string("Trigger")) cmd.type = CommandType::Trigger;
-          else if (c.type == std::string("SetParam")) cmd.type = CommandType::SetParam;
-          else if (c.type == std::string("SetParamRamp")) cmd.type = CommandType::SetParamRamp;
-          cmd.paramId = c.paramId;
-          cmd.value = c.value;
-          cmd.rampMs = c.rampMs;
-          while (gRunning.load() && !cmdQueue.push(cmd)) {
-            if (rtDebugFeed) {
-              std::fprintf(stderr, "[rt-feed] init queue full: size=%zu/%zu, cmd at %llu type=%u pid=%u\n",
-                cmdQueue.approxSizeProducer(), cmdQueue.capacity(),
-                static_cast<unsigned long long>(cmd.sampleTime),
-                (unsigned)cmd.type, (unsigned)cmd.paramId);
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-          }
-          if (!gRunning.load()) break;
-        }
-      }
-
-      // Rolling feeder thread to extend horizon in realtime without flooding the queue
-      if (startFeeder) {
-        uint64_t nextOffset = loopLen; // after the first loop
-        const uint64_t desiredAheadFrames = static_cast<uint64_t>(5.0 * rt.sampleRate()); // keep ~5s of commands ahead
-        transportFeeder = std::thread([&cmdQueue, baseCmds, realtimeCmds, loopLen, nextOffset, &rt, desiredAheadFrames, rtDebugFeed]() mutable {
-          uint64_t offset = nextOffset;
-          // Initial bulk push is done here to keep SPSC contract (single producer)
-          for (const auto& c : realtimeCmds) {
-            Command cmd{};
-            cmd.sampleTime = c.sampleTime;
-            cmd.nodeId = internNodeId(c.nodeId);
-            if (c.type == std::string("Trigger")) cmd.type = CommandType::Trigger;
-            else if (c.type == std::string("SetParam")) cmd.type = CommandType::SetParam;
-            else if (c.type == std::string("SetParamRamp")) cmd.type = CommandType::SetParamRamp;
-            cmd.paramId = c.paramId;
-            cmd.value = c.value;
-            cmd.rampMs = c.rampMs;
-            while (gRunning.load() && !cmdQueue.push(cmd)) {
-              if (rtDebugFeed) {
-                std::fprintf(stderr, "[rt-feed] init queue full: size=%zu/%zu, cmd at %llu type=%u pid=%u\n",
-                  cmdQueue.approxSizeProducer(), cmdQueue.capacity(),
-                  static_cast<unsigned long long>(cmd.sampleTime),
-                  (unsigned)cmd.type, (unsigned)cmd.paramId);
-              }
-              std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-            if (!gRunning.load()) break;
-          }
-          while (gRunning.load()) {
-            const uint64_t framesNow = static_cast<uint64_t>(rt.sampleCounter());
-            // Enqueue next loop when its start is within desiredAheadFrames from now
-            if (offset <= framesNow + desiredAheadFrames) {
-              // Enqueue one additional loop span
-              size_t pushed = 0;
-              for (auto c : baseCmds) {
-                Command cmd{};
-                cmd.sampleTime = c.sampleTime + offset;
-                cmd.nodeId = internNodeId(c.nodeId);
-                if (c.type == std::string("Trigger")) cmd.type = CommandType::Trigger;
-                else if (c.type == std::string("SetParam")) cmd.type = CommandType::SetParam;
-                else if (c.type == std::string("SetParamRamp")) cmd.type = CommandType::SetParamRamp;
-                cmd.paramId = c.paramId;
-                cmd.value = c.value;
-                cmd.rampMs = c.rampMs;
-                // Always push; if queue is saturated, retry briefly but allow shutdown to break out
-                while (gRunning.load() && !cmdQueue.push(cmd)) {
-                  if (rtDebugFeed) {
-                    std::fprintf(stderr, "[rt-feed] queue full: size=%zu/%zu at f=%llu, cmd at %llu type=%u pid=%u\n",
-                      cmdQueue.approxSizeProducer(), cmdQueue.capacity(),
-                      static_cast<unsigned long long>(framesNow), static_cast<unsigned long long>(cmd.sampleTime),
-                      (unsigned)cmd.type, (unsigned)cmd.paramId);
-                  }
-                  std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                }
-                ++pushed;
-                if (!gRunning.load()) break; // allow clean shutdown without blocking on a full queue
-              }
-              if (!gRunning.load()) break;
-              if (rtDebugFeed) {
-                const uint64_t framesAfter = static_cast<uint64_t>(rt.sampleCounter());
-                std::fprintf(stderr, "[rt-feed] extended horizon offset=%llu (+%llu) now=%llu span=%llu pushed=%zu\n",
-                  static_cast<unsigned long long>(offset), static_cast<unsigned long long>(loopLen),
-                  static_cast<unsigned long long>(framesAfter), static_cast<unsigned long long>(loopLen), pushed);
-              }
-              offset += loopLen;
-            } else {
-              if (rtDebugFeed) {
-                const uint64_t need = (offset + loopLen);
-                std::fprintf(stderr, "[rt-feed] sleeping: now=%llu need<=%llu (ahead=%lld)\n",
-                  static_cast<unsigned long long>(framesNow), static_cast<unsigned long long>(need),
-                  static_cast<long long>((long long)need - (long long)framesNow));
-              }
-              std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-          }
-        });
-      }
-    } catch (...) {}
+    graph.addNode("kick_default", std::make_unique<KickNode>(params));
   }
-  double elapsedSec = 0.0;
-  uint64_t lastPrintedLoop = 0;
-  while (gRunning.load()) {
-    if (isStdinReady()) {
-      char buf[4];
-      (void)read(STDIN_FILENO, buf, sizeof(buf));
-      gRunning.store(false);
-      break;
+
+  std::unique_ptr<mam::session::EventSchedule> schedule;
+  SpscCommandQueue<2048> commandQueue;
+  RealtimeGraphRenderer rt;
+  // Destruction requests cancellation and joins before the renderer, queue,
+  // schedule and graph are destroyed, including exception paths.
+  std::jthread feeder;
+  try {
+    rt.setCommandQueue(&commandQueue);
+    rt.setCmdQueueDebug(rtDebugFeed);
+    const double diagnosticBpm = realtimeSpec.hasTransport && realtimeSpec.transport.bpm > 0.0
+        ? realtimeSpec.transport.bpm : 120.0;
+    const uint32_t diagnosticResolution = realtimeSpec.hasTransport
+        ? realtimeSpec.transport.resolution : 16u;
+    rt.setDiagnostics(printTriggers, diagnosticBpm, diagnosticResolution);
+    rt.setTransportEmitEnabled(false);
+    rt.start(graph, 48000.0, 2); // Prepare the device; no consumer is running yet.
+    auto plan = mam::app::planGraphPlayback(realtimeSpec, static_cast<uint32_t>(rt.sampleRate() + 0.5));
+    const SampleTime loopFrames = plan.loopFrames;
+    rt.setDiagLoop(loopFrames);
+    schedule = std::make_unique<mam::session::EventSchedule>(std::move(plan.events));
+    const auto initialFrames = static_cast<SampleTime>(3.0 * rt.sampleRate());
+    const auto primed = mam::session::primeSessionQueue(*schedule, commandQueue, initialFrames,
+        [] { return gRunning.load(std::memory_order_relaxed); });
+    if (primed.stopped || !gRunning.load(std::memory_order_relaxed)) return 0;
+    if (printLatency) {
+      const auto preroll = computeGraphPrerollSamples(realtimeSpec, static_cast<uint32_t>(rt.sampleRate() + 0.5));
+      std::fprintf(stderr, "Graph preroll: %.3f ms\n", 1000.0 * static_cast<double>(preroll) / rt.sampleRate());
     }
-    // When --print-triggers is enabled, the render callback prints loop boundaries precisely.
-    // Suppress the coarse main-thread loop print in that case to avoid late/duplicate messages.
-    if (rtLoopLen > 0 && !printTriggers) {
-      const uint64_t frames = static_cast<uint64_t>(rt.sampleCounter());
-      const uint64_t loopIdx = frames / rtLoopLen;
-      if (loopIdx > lastPrintedLoop) {
+    rt.begin();
+    const auto refillFrames = static_cast<SampleTime>(5.0 * rt.sampleRate());
+    if (schedule->nextFrame()) {
+      feeder = std::jthread([&, refillFrames](std::stop_token stop) {
+        const auto running = [&] {
+          return !stop.stop_requested() && gRunning.load(std::memory_order_relaxed);
+        };
+        while (running()) {
+          const auto result = schedule->pump(mam::session::lookaheadEnd(rt.sampleCounter(), refillFrames),
+              [&](const Command& command) { return commandQueue.push(command); },
+              commandQueue.capacity(), running);
+          if (result.stopped || !result.pending) break;
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+      });
+    }
+    uint64_t lastPrintedLoop = 0;
+    uint64_t lastLateCount = 0;
+    while (gRunning.load(std::memory_order_relaxed)) {
+      if (isStdinReady()) {
+        char buffer[4];
+        (void)read(STDIN_FILENO, buffer, sizeof(buffer));
+        gRunning.store(false, std::memory_order_relaxed);
+        break;
+      }
+      const SampleTime frames = rt.sampleCounter();
+      if (loopFrames > 0 && !printTriggers && frames / loopFrames > lastPrintedLoop) {
+        lastPrintedLoop = frames / loopFrames;
         if (verbose) {
           const double seconds = static_cast<double>(frames) / rt.sampleRate();
           std::fprintf(stderr, "Loop %llu at %s (%.3fs)\n",
-                       static_cast<unsigned long long>(loopIdx), formatDuration(seconds).c_str(), seconds);
-        }
-        lastPrintedLoop = loopIdx;
-        // Print estimated graph preroll (latency) once at first loop boundary
-        if (loopIdx == 1 && !graphPath.empty()) {
-          try {
-            GraphSpec spec = loadGraphSpecFromJsonFile(graphPath);
-            const uint64_t preroll = computeGraphPrerollSamples(spec, static_cast<uint32_t>(rt.sampleRate() + 0.5));
-            std::fprintf(stderr, "Graph preroll: %.3f ms\n", 1000.0 * static_cast<double>(preroll) / rt.sampleRate());
-          } catch (...) {}
-        }
-        if (cpuStats || cpuStatsPerNode) {
-          const auto s = graph.getCpuSummary();
-          std::fprintf(stderr, "CPU block avg=%.3fms max=%.3fms (avg=%.1f%% max=%.1f%%) xruns=%llu blocks=%llu\n",
-                       s.avgMs, s.maxMs, s.avgPercent, s.maxPercent,
-                       static_cast<unsigned long long>(s.overruns), static_cast<unsigned long long>(s.blocks));
-          if (cpuStatsPerNode) {
-            const auto per = graph.getPerNodeCpu();
-            for (const auto& n : per) std::fprintf(stderr, "  %s: avg=%.1fus max=%.1fus\n", n.id.c_str(), n.avgUs, n.maxUs);
-          }
-        }
-        if (metersPerNode) {
-          const auto meters = graph.getNodeMeters(2);
-          for (const auto& m : meters) {
-            const bool inactive = (!std::isfinite(m.peakDb) && !std::isfinite(m.rmsDb));
-            if (inactive) {
-              std::fprintf(stderr, "  Node %s: inactive\n", m.id.c_str());
-            } else {
-              std::fprintf(stderr, "  Node %s: peak=%.2f dBFS rms=%.2f dBFS\n", m.id.c_str(), m.peakDb, m.rmsDb);
-            }
-          }
+              static_cast<unsigned long long>(lastPrintedLoop), formatDuration(seconds).c_str(), seconds);
         }
       }
+      const auto late = rt.lateEventCount();
+      if (late != lastLateCount) {
+        std::fprintf(stderr, "[rt-graph] late events delivered: %llu\n", static_cast<unsigned long long>(late));
+        lastLateCount = late;
+      }
+      if (quitAfterSec > 0.0 && static_cast<double>(frames) / rt.sampleRate() >= quitAfterSec) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    if (quitAfterSec > 0.0) {
-      elapsedSec += 0.05;
-      if (elapsedSec >= quitAfterSec) {
-        gRunning.store(false);
-        break;
+    feeder.request_stop();
+    if (feeder.joinable()) feeder.join();
+    rt.stop();
+    // Mutable node/graph statistics are read only after the consumer stops.
+    if (cpuStats || cpuStatsPerNode) {
+      const auto stats = graph.getCpuSummary();
+      std::fprintf(stderr, "CPU block avg=%.3fms max=%.3fms (avg=%.1f%% max=%.1f%%) xruns=%llu blocks=%llu\n",
+          stats.avgMs, stats.maxMs, stats.avgPercent, stats.maxPercent,
+          static_cast<unsigned long long>(stats.overruns), static_cast<unsigned long long>(stats.blocks));
+      if (cpuStatsPerNode) {
+        for (const auto& node : graph.getPerNodeCpu())
+          std::fprintf(stderr, "  %s: avg=%.1fus max=%.1fus\n", node.id.c_str(), node.avgUs, node.maxUs);
       }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  }
-
-  rt.stop();
-  if (metersPerNode) {
-    const auto meters = graph.getNodeMeters(2);
-    for (const auto& m : meters) {
-      std::fprintf(stderr, "Node %s: peak=%.2f dBFS rms=%.2f dBFS\n", m.id.c_str(), m.peakDb, m.rmsDb);
+    if (metersPerNode) {
+      for (const auto& meter : graph.getNodeMeters(2))
+        std::fprintf(stderr, "Node %s: peak=%.2f dBFS rms=%.2f dBFS\n",
+            meter.id.c_str(), meter.peakDb, meter.rmsDb);
     }
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "Realtime graph failed: %s\n", error.what());
+    return 1;
   }
-  if (transportFeeder.joinable()) transportFeeder.join();
-
   return 0;
 }

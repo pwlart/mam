@@ -14,6 +14,8 @@ namespace mam::session {
 
 // A base event is a one-shot when periodFrames == 0. Otherwise it repeats at
 // frame + k * periodFrames, including when frame lies beyond the first period.
+// Only occurrences before endFrameExclusive are eligible. The default excludes
+// UINT64_MAX, which no representable exclusive pump horizon could reach.
 // Strings belong to the schedule, which must outlive every queued Command.
 struct ScheduledEvent {
   SampleTime frame = 0;
@@ -25,6 +27,7 @@ struct ScheduledEvent {
   std::string paramName;
   uint8_t source = 0;
   SampleTime periodFrames = 0;
+  SampleTime endFrameExclusive = std::numeric_limits<SampleTime>::max();
 };
 
 class EventSchedule {
@@ -54,7 +57,7 @@ public:
       if (event.type != CommandType::Trigger && event.type != CommandType::SetParam &&
           event.type != CommandType::SetParamRamp)
         throw std::invalid_argument("Unknown session event type");
-      heap_.push_back({i, event.frame});
+      if (event.frame < event.endFrameExclusive) heap_.push_back({i, event.frame});
     }
     std::make_heap(heap_.begin(), heap_.end(), Later{&events_});
   }
@@ -107,8 +110,10 @@ public:
       ++result.enqueued;
       std::pop_heap(heap_.begin(), heap_.end(), later);
       heap_.pop_back();
+      // Every cursor is below its end bound. Comparing the remaining distance
+      // before addition enforces that exclusive bound and prevents overflow.
       if (event.periodFrames != 0 &&
-          event.periodFrames <= std::numeric_limits<SampleTime>::max() - cursor.frame) {
+          event.periodFrames < event.endFrameExclusive - cursor.frame) {
         cursor.frame += event.periodFrames;
         heap_.push_back(cursor);  // Never exceeds the reserved base-event count.
         std::push_heap(heap_.begin(), heap_.end(), later);

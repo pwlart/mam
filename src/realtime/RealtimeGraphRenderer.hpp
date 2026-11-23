@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include "../core/TransportNode.hpp"
+#include "../session/SessionFeeding.hpp"
 
 class RealtimeGraphRenderer {
 public:
@@ -79,9 +80,14 @@ public:
       sampleRate_ = requestedSampleRate;
     }
 
-    err = AudioOutputUnitStart(unit_.get());
+    sampleCounter_.store(0, std::memory_order_relaxed);
+    lateEvents_.store(0, std::memory_order_relaxed);
+  }
+
+  void begin() {
+    if (!unit_.get()) throw std::logic_error("Realtime graph is not prepared");
+    const OSStatus err = AudioOutputUnitStart(unit_.get());
     if (err != noErr) throw std::runtime_error(std::string("AudioOutputUnitStart failed: ") + osstatusToString(err));
-    sampleCounter_ = 0;
   }
 
   void stop() {
@@ -89,6 +95,7 @@ public:
   }
 
   double sampleRate() const noexcept { return sampleRate_; }
+  uint64_t lateEventCount() const noexcept { return lateEvents_.load(std::memory_order_relaxed); }
   SampleTime sampleCounter() const noexcept { return sampleCounter_.load(std::memory_order_relaxed); }
 
 private:
@@ -132,17 +139,6 @@ private:
           static_cast<unsigned long long>(blockStartAbs),
           static_cast<unsigned long long>(cutoff));
       }
-        // Sort events to stabilize segment splits and de-duplicate identical ones on the same sample
-        std::sort(self->drained_.begin(), self->drained_.end(), [](const Command& a, const Command& b){
-          if (a.sampleTime != b.sampleTime) return a.sampleTime < b.sampleTime;
-          if (a.nodeId != b.nodeId) return std::strcmp(a.nodeId ? a.nodeId : "", b.nodeId ? b.nodeId : "") < 0;
-          if (a.type != b.type) return a.type < b.type;
-          if (a.paramId != b.paramId) return a.paramId < b.paramId;
-          return a.value < b.value;
-        });
-        self->drained_.erase(std::unique(self->drained_.begin(), self->drained_.end(), [](const Command& x, const Command& y){
-          return x.sampleTime == y.sampleTime && x.nodeId && y.nodeId && std::strcmp(x.nodeId, y.nodeId) == 0 && x.type == y.type && x.paramId == y.paramId && x.value == y.value && x.rampMs == y.rampMs;
-        }), self->drained_.end());
       for (const Command& c : self->drained_) {
         if (c.sampleTime >= blockStartAbs && c.sampleTime < cutoff) {
           const uint32_t off = static_cast<uint32_t>(c.sampleTime - blockStartAbs);
@@ -157,6 +153,7 @@ private:
     std::sort(splitOffsets.begin(), splitOffsets.end());
     splitOffsets.erase(std::unique(splitOffsets.begin(), splitOffsets.end()), splitOffsets.end());
 
+    mam::session::SessionEventDispatcher dispatcher(self->drained_, blockStartAbs);
     // Render each segment and apply events at boundaries
     for (size_t si = 0; si + 1 < splitOffsets.size(); ++si) {
       const uint32_t segStart = splitOffsets[si];
@@ -164,24 +161,16 @@ private:
       const uint32_t segFrames = segEnd - segStart;
       if (segFrames == 0) continue;
 
-      // Deliver events that occur exactly at this segment start
-      if (self->cmdQueue_ && !self->drained_.empty()) {
-        const SampleTime segAbsStart = blockStartAbs + static_cast<SampleTime>(segStart);
-        // 1) Apply SetParam/SetParamRamp first (latch values before triggers), matching offline
-        for (const Command& c : self->drained_) {
-          if (c.sampleTime == segAbsStart && c.nodeId && (c.type == CommandType::SetParam || c.type == CommandType::SetParamRamp)) {
-            if (self->printTriggers_) self->printEvent(c.type == CommandType::SetParam ? "SET" : "RAMP", c);
-            self->graph_->forEachNode([&](const std::string& id, Node& n){ if (id == c.nodeId) n.handleEvent(c); });
-          }
-        }
-        // 2) Then apply Triggers
-        for (const Command& c : self->drained_) {
-          if (c.sampleTime == segAbsStart && c.nodeId && c.type == CommandType::Trigger) {
-            if (self->printTriggers_) self->printEvent("TRIGGER", c);
-            self->graph_->forEachNode([&](const std::string& id, Node& n){ if (id == c.nodeId) n.handleEvent(c); });
-          }
-        }
-      }
+      const auto deliver = [&](const Command& command) {
+        if (self->printTriggers_) self->printEvent(command.type == CommandType::Trigger ? "TRIGGER" :
+            (command.type == CommandType::SetParam ? "SET" : "RAMP"), command);
+        if (command.nodeId) self->graph_->forEachNode([&](const std::string& id, Node& node) {
+          if (id == command.nodeId) node.handleEvent(command);
+        });
+      };
+      const auto late = dispatcher.dispatchAt(blockStartAbs + segStart,
+          [](const Command&) {}, deliver, deliver);
+      self->lateEvents_.fetch_add(late, std::memory_order_relaxed);
 
       // Let transport-like nodes emit events at exact sample offsets across the whole segment
       self->graph_->forEachNode([&](const std::string& id, Node& n){
@@ -218,6 +207,7 @@ private:
   uint32_t channels_ = 2;
   double sampleRate_ = 48000.0;
   std::atomic<SampleTime> sampleCounter_{0};
+  std::atomic<uint64_t> lateEvents_{0};
   SpscCommandQueue<2048>* cmdQueue_ = nullptr;
   std::vector<Command> drained_;
   bool printTriggers_ = false;

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Migrate single-graph playback to the owned event cursor. Prime before audio
+  activation, bound finite explicit schedules, retain distinct events and late
+  groups, and join the feeder before reading final statistics or releasing inputs.
 - Extract CLI parsing and realtime session application code into `mam_app`;
   extract device-independent rack timelines into `mam_session`.
 - Remove the unreachable duplicate realtime session branch. Preserve existing
