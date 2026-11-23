@@ -6,11 +6,11 @@
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
-#include <atomic>
 #include <memory>
-#include <thread>
 #include <mutex>
 #include <cstdio>
+#include <exception>
+#include <future>
 #include "../core/Graph.hpp"
 #include "BufferPool.hpp"
 #include "OfflineProgress.hpp"
@@ -22,8 +22,8 @@
 #include "../core/MeterNode.hpp"
 #include "../core/JobPool.hpp"
 
-// Scaffold: A minimal topological scheduler for offline rendering.
-// Current Graph has no explicit edges; this placeholder processes nodes then applies mixer.
+// Offline topological rendering. Parallel node jobs borrow segment storage;
+// every accepted job settles before processing advances or failure propagates.
 class OfflineTopoScheduler {
 public:
   explicit OfflineTopoScheduler(uint32_t channels) : pool_(channels), channels_(channels) {}
@@ -70,6 +70,37 @@ public:
               uint32_t channels,
               uint64_t frames,
               std::vector<float>& out) {
+    // A render call owns its output and topology snapshot. On failure, no
+    // partial buffer is exposed as completed audio and a later call rebuilds
+    // topology/storage rather than reusing pointers from the failed segment.
+    resetRenderStorage();
+    setChannels(channels);
+    out.clear();
+    try {
+      renderImpl(graph, connections, cmds, sampleRate, channels, frames, out);
+    } catch (...) {
+      // Parallel batches drain all accepted jobs before reaching this boundary.
+      resetRenderStorage();
+      out.clear();
+      throw;
+    }
+  }
+
+private:
+  void resetRenderStorage() noexcept {
+    pool_.releaseAll();
+    std::fill(nodeBuffers_.begin(), nodeBuffers_.end(), nullptr);
+    std::fill(lifetimeIds_.begin(), lifetimeIds_.end(), 0ull);
+    levelsBuilt_ = false;
+    stableConnsApplied_ = false;
+    stableConns_.clear();
+  }
+
+  void renderImpl(Graph& graph,
+                  const std::vector<GraphSpec::Connection>& connections,
+                  const std::vector<GraphSpec::CommandSpec>& cmds,
+                  uint32_t sampleRate, uint32_t channels, uint64_t frames,
+                  std::vector<float>& out) {
     const uint32_t blockSize = blockSize_;
     graph.prepare(sampleRate, blockSize);
     graph.reset();
@@ -92,7 +123,7 @@ public:
       graph.setConnections(sorted);
       stableConnsApplied_ = true;
     }
-    // Build topo levels once for diagnostics (serial execution for now)
+    // Build levels for this render's topology and diagnostics.
     if (!levelsBuilt_) {
       buildLevels(graph, connections);
       if (debug_) printLevels(graph);
@@ -175,63 +206,84 @@ public:
           if (threads_ > 1 && level.size() >= minWidth_ && segFrames >= minSegFrames_) {
             uint32_t useThreads = threads_;
             if (level.size() < useThreads) useThreads = static_cast<uint32_t>(level.size());
-            if (!jobPool_ || jobPoolThreads_ != useThreads) { jobPool_ = std::make_unique<JobPool>(useThreads); jobPoolThreads_ = useThreads; }
-            std::atomic<uint32_t> done{0};
-            const uint32_t need = static_cast<uint32_t>(level.size());
-            const auto tBarrierStart = cpuStatsEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-            for (size_t ni : level) {
-              jobPool_->submit([&, ni]() {
-                // Build per-port sums from upstream edges (local)
-                std::unordered_map<uint32_t, std::vector<float>> lportSums;
-                std::vector<Graph::EdgeInfo> ups; graph.getUpstreamEdgeInfos(ni, ups);
-                for (const auto& e : ups) {
-                  const float* src = nodeBuffers_[e.fromIndex]; if (!src) continue;
-                  auto& dst = lportSums[e.toPort]; if (dst.size() != totalSamples) dst.assign(totalSamples, 0.0f);
-                  const uint32_t srcDecl = graph.getDeclaredOutChannels(e.fromIndex, e.fromPort);
-                  const uint32_t dstDecl = graph.getDeclaredInChannels(ni, e.toPort);
-                  graph.accumulateEdge(src, dst, segFrames, channels, srcDecl, dstDecl, e.gain);
-                }
-                // Ensure output buffer for this node
-                if (!nodeBuffers_[ni]) {
-                  auto& vec = nodeVectors_[ni];
-                  if (vec.size() != totalSamples) vec.assign(totalSamples, 0.0f); else std::fill(vec.begin(), vec.end(), 0.0f);
-                  nodeBuffers_[ni] = vec.data();
-                }
-                const float* mainIn2 = (lportSums.count(0u) ? lportSums[0u].data() : nullptr);
-                Node* node2 = graph.nodeAt(ni);
-                const auto tNodeStart = cpuStatsEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-                if (auto* d2 = dynamic_cast<DelayNode*>(node2)) {
-                  if (mainIn2) std::copy(lportSums[0u].begin(), lportSums[0u].end(), nodeBuffers_[ni]);
-                  ProcessContext ctx2{}; ctx2.sampleRate = sampleRate; ctx2.frames = segFrames; ctx2.blockStart = segAbs;
-                  d2->processInPlace(ctx2, nodeBuffers_[ni], channels);
-                } else if (auto* c2 = dynamic_cast<CompressorNode*>(node2)) {
-                  if (mainIn2) std::copy(lportSums[0u].begin(), lportSums[0u].end(), nodeBuffers_[ni]);
-                  std::vector<float> sc2; sc2.assign(totalSamples, 0.0f);
-                  auto itSC2 = lportSums.find(1u); if (itSC2 != lportSums.end()) sc2 = itSC2->second;
-                  ProcessContext ctx2{}; ctx2.sampleRate = sampleRate; ctx2.frames = segFrames; ctx2.blockStart = segAbs;
-                  c2->applySidechain(ctx2, nodeBuffers_[ni], sc2.data(), channels);
-                } else if (auto* m2 = dynamic_cast<MeterNode*>(node2)) {
-                  if (mainIn2) std::copy(lportSums[0u].begin(), lportSums[0u].end(), nodeBuffers_[ni]);
-                  ProcessContext ctx2{}; ctx2.sampleRate = sampleRate; ctx2.frames = segFrames; ctx2.blockStart = segAbs;
-                  m2->updateFromBuffer(nodeBuffers_[ni], segFrames, channels);
-                } else {
-                  ProcessContext ctx2{}; ctx2.sampleRate = sampleRate; ctx2.frames = segFrames; ctx2.blockStart = segAbs;
-                  node2->process(ctx2, nodeBuffers_[ni], channels);
-                }
-                if (cpuStatsEnabled_) {
-                  const auto tNodeEnd = std::chrono::steady_clock::now();
-                  const double ns = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(tNodeEnd - tNodeStart).count());
-                  std::lock_guard<std::mutex> lk(statsMu_);
-                  if (ni >= nodeNsSum_.size()) { nodeNsSum_.resize(ni + 1, 0.0L); nodeNsMax_.resize(ni + 1, 0.0); nodeCalls_.resize(ni + 1, 0u); }
-                  nodeNsSum_[ni] += static_cast<long double>(ns);
-                  if (ns > nodeNsMax_[ni]) nodeNsMax_[ni] = ns;
-                  nodeCalls_[ni] += 1u;
-                }
-                done.fetch_add(1, std::memory_order_release);
-              });
+            // Admission can hold this entire level even if every worker is
+            // busy. Capacity grows only with graph width, never total frames.
+            if (!jobPool_ || jobPoolThreads_ != useThreads || jobPoolCapacity_ < level.size()) {
+              jobPool_ = std::make_unique<JobPool>(useThreads, level.size());
+              jobPoolThreads_ = useThreads;
+              jobPoolCapacity_ = level.size();
             }
-            // Spin-wait barrier (render thread only); short levels
-            while (done.load(std::memory_order_acquire) < need) std::this_thread::yield();
+            std::vector<std::future<void>> accepted;
+            accepted.reserve(level.size()); // accepted-future tracking cannot allocate
+            std::exception_ptr failure;
+            const auto tBarrierStart = cpuStatsEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+            try {
+              for (size_t ni : level) {
+                accepted.push_back(jobPool_->submit([&, ni]() {
+                  // Build per-port sums from upstream edges (local)
+                  std::unordered_map<uint32_t, std::vector<float>> lportSums;
+                  std::vector<Graph::EdgeInfo> ups; graph.getUpstreamEdgeInfos(ni, ups);
+                  for (const auto& e : ups) {
+                    const float* src = nodeBuffers_[e.fromIndex]; if (!src) continue;
+                    auto& dst = lportSums[e.toPort]; if (dst.size() != totalSamples) dst.assign(totalSamples, 0.0f);
+                    const uint32_t srcDecl = graph.getDeclaredOutChannels(e.fromIndex, e.fromPort);
+                    const uint32_t dstDecl = graph.getDeclaredInChannels(ni, e.toPort);
+                    graph.accumulateEdge(src, dst, segFrames, channels, srcDecl, dstDecl, e.gain);
+                  }
+                  // Ensure output buffer for this node
+                  if (!nodeBuffers_[ni]) {
+                    auto& vec = nodeVectors_[ni];
+                    if (vec.size() != totalSamples) vec.assign(totalSamples, 0.0f); else std::fill(vec.begin(), vec.end(), 0.0f);
+                    nodeBuffers_[ni] = vec.data();
+                  }
+                  const float* mainIn2 = (lportSums.count(0u) ? lportSums[0u].data() : nullptr);
+                  Node* node2 = graph.nodeAt(ni);
+                  const auto tNodeStart = cpuStatsEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                  if (auto* d2 = dynamic_cast<DelayNode*>(node2)) {
+                    if (mainIn2) std::copy(lportSums[0u].begin(), lportSums[0u].end(), nodeBuffers_[ni]);
+                    ProcessContext ctx2{}; ctx2.sampleRate = sampleRate; ctx2.frames = segFrames; ctx2.blockStart = segAbs;
+                    d2->processInPlace(ctx2, nodeBuffers_[ni], channels);
+                  } else if (auto* c2 = dynamic_cast<CompressorNode*>(node2)) {
+                    if (mainIn2) std::copy(lportSums[0u].begin(), lportSums[0u].end(), nodeBuffers_[ni]);
+                    std::vector<float> sc2; sc2.assign(totalSamples, 0.0f);
+                    auto itSC2 = lportSums.find(1u); if (itSC2 != lportSums.end()) sc2 = itSC2->second;
+                    ProcessContext ctx2{}; ctx2.sampleRate = sampleRate; ctx2.frames = segFrames; ctx2.blockStart = segAbs;
+                    c2->applySidechain(ctx2, nodeBuffers_[ni], sc2.data(), channels);
+                  } else if (auto* m2 = dynamic_cast<MeterNode*>(node2)) {
+                    if (mainIn2) std::copy(lportSums[0u].begin(), lportSums[0u].end(), nodeBuffers_[ni]);
+                    ProcessContext ctx2{}; ctx2.sampleRate = sampleRate; ctx2.frames = segFrames; ctx2.blockStart = segAbs;
+                    m2->updateFromBuffer(nodeBuffers_[ni], segFrames, channels);
+                  } else {
+                    ProcessContext ctx2{}; ctx2.sampleRate = sampleRate; ctx2.frames = segFrames; ctx2.blockStart = segAbs;
+                    node2->process(ctx2, nodeBuffers_[ni], channels);
+                  }
+                  if (cpuStatsEnabled_) {
+                    const auto tNodeEnd = std::chrono::steady_clock::now();
+                    const double ns = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(tNodeEnd - tNodeStart).count());
+                    std::lock_guard<std::mutex> lk(statsMu_);
+                    if (ni >= nodeNsSum_.size()) { nodeNsSum_.resize(ni + 1, 0.0L); nodeNsMax_.resize(ni + 1, 0.0); nodeCalls_.resize(ni + 1, 0u); }
+                    nodeNsSum_[ni] += static_cast<long double>(ns);
+                    if (ns > nodeNsMax_[ni]) nodeNsMax_[ni] = ns;
+                    nodeCalls_[ni] += 1u;
+                  }
+                }));
+              }
+            } catch (...) {
+              failure = std::current_exception();
+            }
+            // std::future destruction alone does not join JobPool jobs. Drain
+            // every accepted future even if submission or an earlier job fails;
+            // these workers still borrow this segment's graph and buffers.
+            for (auto& job : accepted) {
+              try { job.get(); }
+              catch (...) { if (!failure) failure = std::current_exception(); }
+            }
+            // Future readiness precedes callable destruction in JobPool. Its
+            // idle barrier also settles that cleanup before borrowed storage
+            // leaves scope (this scheduler is the pool's only producer).
+            try { jobPool_->wait(); }
+            catch (...) { if (!failure) failure = std::current_exception(); }
+            if (failure) std::rethrow_exception(failure);
             if (cpuStatsEnabled_) {
               const auto tBarrierEnd = std::chrono::steady_clock::now();
               const double ns = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(tBarrierEnd - tBarrierStart).count());
@@ -467,6 +519,7 @@ private:
   uint32_t minSegFrames_ = 128; // skip parallelism for tiny splits
   std::unique_ptr<JobPool> jobPool_{};
   uint32_t jobPoolThreads_ = 0;
+  size_t jobPoolCapacity_ = 0;
   std::vector<uint64_t> lifetimeIds_{};
 
   // CPU stats

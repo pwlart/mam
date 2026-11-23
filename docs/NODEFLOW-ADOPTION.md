@@ -73,11 +73,13 @@ device was opened to reproduce a playback failure.
    `MamChipNode::process()` calls global `rand()`. A seed alone cannot guarantee
    identical per-node streams under a different scheduler. The current parity
    fixtures are not proof for every noisy rack.
-4. **Offline worker lifecycle has weak boundaries.** `JobPool` has an unbounded
-   vector, accepts submissions after stop, and directly invokes jobs without
-   an exception containment boundary. Current scheduler batching limits normal
-   submissions, but the class does not encode that assumption. Its lifecycle
-   and failure contract should become testable before broader reuse.
+4. **Offline worker lifecycle — bounded and tested.** `JobPool` now rejects
+   full/closed admission, returns completion futures and defines drain versus
+   cancel-pending shutdown. Concurrent joins are serialized; task exceptions
+   propagate after siblings and cleanup finish. Failed renders discard partial
+   output and rebuild state on retry. Running jobs must return cooperatively;
+   there is no forced interruption or shutdown deadline. See
+   [worker lifecycle](OFFLINE-WORKERS.md).
 5. **Graph guarantees still differ across paths.** Prepared realtime graphs
    reject unsupported cycles, invalid connections and layouts before processing.
    Offline topology retains insertion-order fallback. Mutable node access remains
@@ -91,7 +93,7 @@ device was opened to reproduce a playback failure.
 | 1 | Session and single-graph bounded feeding implemented | Capacity, finite horizons, retries, ordering and cancellation have device-free regressions |
 | 2 | Prepared callback routing/buffers and bounded telemetry implemented; expand verification | First/variable-block C++ allocation/output harness passes for supplied fixtures; broader node/device/wait/deadline coverage and node re-entry guard remain |
 | 3 | Per-node seed/state and rational absolute beat→frame conversion | Same seed gives same node audio across block/thread counts; long-duration frame-error bounds; retain legacy golden comparisons |
-| 4 | Bounded offline task lifecycle, cancellation and stable structured diagnostics | Reject after stop, join/drain semantics, worker-failure propagation, timeout tests, retry only where declared safe |
+| 4 | Bounded offline lifecycle implemented; unify structured diagnostics next | Full/closed admission, drain/cancel-pending, concurrent join and sibling-failure tests pass; diagnostic categories/locations and external-process timeouts remain separate |
 | 5 | One authoritative node/parameter schema and explicit format migration | Generated docs match schemas; unknown/narrowing/invalid-unit inputs fail clearly; old fixtures migrate intentionally |
 | 6 | Plugin/device adapter with its own execution process and capability handshake | Real-format fake plugin supports crash, hang, late response and architecture mismatch tests; no plugin work in callback |
 

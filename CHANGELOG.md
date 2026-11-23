@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bound offline worker admission, with explicit full/closed errors, task futures,
+  drain or cancel-pending shutdown and serialized joining. Propagate node failures
+  only after all accepted siblings settle; discard partial output and rebuild
+  render state on retry, including channel changes.
 - Add prepared graph/session callback paths with preallocated routing and DSP
   buffers, bounded command draining and numeric telemetry polled off-thread.
   Query actual device slice capacity, silence/report unsupported blocks and
@@ -22,7 +26,7 @@
   and out-of-order one-shots, retain events on queue pressure and report lateness.
 - Preserve timestamp-group order during late recovery, join the producer before
   releasing its inputs, reset the clock before activation and stop audio before
-  closing metrics. Single-graph feeding and callback allocation remain open.
+  closing metrics. Broader node/device and clock/RNG verification remains open.
 
 ## 0.1.0 — 2026-11-21
 

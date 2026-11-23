@@ -89,6 +89,14 @@ fixtures/printed buses before changing a generator or seed derivation.
 
 ## Failure and completion
 
+Offline workers use bounded nonblocking admission and futures for values or
+exceptions. Closing rejects new work; drain completes accepted jobs, while
+cancel-pending settles queued jobs with a typed cancellation. Running code must
+finish normally. Parallel render failures wait for all accepted siblings and
+callable cleanup before releasing inputs, then clear partial output. A new
+render rebuilds topology/buffers. See [worker lifecycle](OFFLINE-WORKERS.md) for
+ownership, reentry and the absence of a hard shutdown deadline.
+
 Offline exceptions stop a job; partial files without a valid successful result
 manifest are not finished output. Existing destinations are refused. Native
 stem results now include the binary's build identity; continue recording source,

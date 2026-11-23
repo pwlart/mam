@@ -45,7 +45,7 @@ tables, run `cmake --build --preset default --target docs`; review
 
 ## What the suite checks
 
-The current development suite has 110 native CTest cases: 96 doctest units and 14
+The current development suite has 128 native CTest cases: 114 doctest units and 14
 integration/tooling checks (the released 0.1.0 snapshot had 38 native cases).
 The optional `python` preset adds one CTest entry
 running 69 worker, DSP and DigitalMania pytest cases:
@@ -86,6 +86,11 @@ configure `asan` or `ubsan` with `-DMAM_ENABLE_PYTHON_TESTS=ON` before building.
   and captures console output, with positive controls. Session metric files stay
   empty until control polling. These checks do not intercept every C allocator,
   syscall or lock and do not prove arbitrary-node or hardware deadline safety.
+- Offline workers have explicit full/closed admission, task exception and
+  drain/cancel-pending tests. Concurrent joining, cancellation cleanup, retained
+  futures and nested cleanup reentry use handshakes and bounded test deadlines.
+  Render failures must settle active/pending siblings, clear partial audio and
+  support retry with a changed graph, block size or channel layout.
 - Kick synthesis stays finite, decays, responds to velocity and resets
   reproducibly. Meter and SHA1 results have independent known answers.
 - Transport locks precede same-sample triggers; exact 48 kHz beat positions,

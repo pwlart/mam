@@ -13,6 +13,7 @@ Start with [getting started](GETTING-STARTED.md), then render the
 | Work priorities and acceptance criteria | [Roadmap](ROADMAP.md) |
 | Incremental implementation and verification | [Engine refactoring](REFACTORING.md) |
 | Prepared callbacks, capacity and diagnostics | [Prepared realtime processing](PREPARED-REALTIME.md) |
+| Offline admission, cancellation and joined cleanup | [Worker lifecycle](OFFLINE-WORKERS.md) |
 | Versioning and publishing | [Releasing](RELEASING.md) |
 | DigitalMania provenance and migration boundaries | [norockstar integration](NOROCKSTAR.md) |
 | Architecture lessons from nodeFlow | [nodeFlow adoption](NODEFLOW-ADOPTION.md) |

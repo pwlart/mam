@@ -9,7 +9,7 @@ See [governance](../GOVERNANCE.md) for how changes are reviewed.
 | P0 | Extend realtime coverage and live-device verification | Exercise every supported node/configuration, C allocators, waits and deadline behavior; validate CoreAudio negotiation and fault recovery on hardware |
 | P1 | Own random state per node | Same seed matches across block/thread counts for noisy graphs; reference sound changes are documented |
 | P1 | Rational beat-to-frame timing | Long-duration tempo/swing cases have explicit frame-error bounds; fractional rates no longer accumulate truncation |
-| P1 | Bound worker lifecycle and failure handling | Reject submissions after stop; cancellation, join/drain and exceptions have executable tests |
+| P1 | Stable structured failure diagnostics | Categorize invalid input, task failure and cancellation consistently; report locations and declare safe retry boundaries |
 | P1 | Apply graph validation consistently offline | Prepared realtime graphs reject cycles/unknown links; replace the remaining offline insertion-order fallback with an explicit policy |
 | P1 | Repair manual session crossfader automation | Activate valid targets in a separate behavior patch with event/DSP comparisons; preserve the established LFO path |
 | P2 | One parameter/schema authority | Generated docs and validation share units, IDs, ranges and migration rules |
@@ -31,11 +31,16 @@ See [governance](../GOVERNANCE.md) for how changes are reviewed.
   draining, and moved diagnostics/metrics to control-thread polling. A dedicated
   device-free harness measures first/variable blocks, C++ allocation, output and
   telemetry saturation. See [prepared realtime scope](PREPARED-REALTIME.md).
+- Bounded offline worker admission, futures for completion/failure, explicit
+  drain/cancel-pending shutdown and joined ownership. Parallel render failures
+  settle sibling tasks before releasing inputs; retries rebuild render state.
+  See [worker lifecycle](OFFLINE-WORKERS.md).
 
 The prepared paths do not establish universal realtime safety or a hardware
 deadline guarantee. Keep clock/RNG and manual crossfader changes separate so
-their audio differences remain reviewable. Worker lifecycle is another bounded
-next implementation; broader node/device coverage should accompany it.
+their audio differences remain reviewable. Worker cancellation does not interrupt
+running code or guarantee a shutdown deadline; broader node/device coverage and
+structured diagnostics remain open.
 
 ## Useful first contributions
 

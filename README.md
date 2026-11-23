@@ -76,6 +76,7 @@ unavailable; the optional Python preflight is separate.
 | Use Python tools | [Companion guide](python/README.md) |
 | Arrange PCM precisely | [Native stem contract](docs/NATIVE-STEMS.md) |
 | Understand ownership | [Execution contract](docs/ENGINE-CONTRACT.md) |
+| Understand offline cancellation and failure | [Worker lifecycle](docs/OFFLINE-WORKERS.md) |
 | Run or add tests | [Testing](docs/TESTING.md) |
 | Find a contribution | [Contributing](CONTRIBUTING.md) and [roadmap](docs/ROADMAP.md) |
 | Browse the references | [Documentation index](docs/README.md) |

@@ -93,10 +93,35 @@ all six configurations. Four offline renders match the saved pre-change build
 exactly and eight CLI routes preserve normalized output/exit codes. Repository
 hygiene, links, whitespace and local source/history secret scans pass.
 
+## Fifth slice: bounded offline workers
+
+`JobPool` now bounds pending admission and returns futures for completion,
+values and exceptions. Full/closed admission fails immediately. Drain completes
+accepted work; cancel-pending settles queued work with `Cancelled` while running
+jobs finish normally. Concurrent shutdown callers serialize joining, and idle
+completion includes callable cleanup. Scoped guards reject same-pool control
+reentry from jobs and nested cancellation cleanup before it can deadlock.
+
+The topological scheduler reserves its per-level future list before submission,
+then waits for every accepted sibling and worker cleanup even when a job fails.
+It no longer spins on a completion counter that a throwing job could abandon.
+Failed renders discard partial output and release stale buffer references;
+new calls rebuild topology and synchronize buffer channels. The contract is
+documented in [offline workers](OFFLINE-WORKERS.md). Running jobs still need to
+return; cancellation does not promise forced interruption or a deadline.
+
+Validation: all 128 native CTest cases pass in default, debug, TSan, ASan and
+UBSan builds. The optional Python preset passes 129 CTest entries, including
+69 pytest cases. Eight saved-build render comparisons match sample-for-sample,
+including serial/four-thread topology at 44.1/48 kHz; eight CLI comparisons
+retain normalized output/exit codes. Source/history secret scans and repository
+hygiene pass. A read-only CoreAudio probe exposed no devices to this process,
+so no physical playback or device-setting changes were attempted.
+
 ## Remaining scope
 
 Broader node/device coverage, rational transport time, per-node randomness,
-manual crossfader automation and worker-pool lifecycle remain roadmap items.
+manual crossfader automation and structured diagnostics remain roadmap items.
 Musical session commands still have a clock-conversion gap if the actual device
 rate differs from the requested rate. These changes do not rerender accepted
 production masters.
