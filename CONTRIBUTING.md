@@ -16,6 +16,8 @@ is easier to review than a broad engine rewrite.
 
 Tests and public examples must run without recordings, a device, network access
 or the maintainer's workspace. Update docs and schemas when contracts change.
+For implementation moves, follow the [C++ boundary plan](docs/CPP-BOUNDARIES.md)
+and keep source extraction separate from timing or sound changes.
 A passing offline test does not establish glitch-free realtime playback;
 read the [execution contract](docs/ENGINE-CONTRACT.md).
 

@@ -15,6 +15,8 @@ Start with [getting started](GETTING-STARTED.md), then render the
 | Prepared callbacks, capacity and diagnostics | [Prepared realtime processing](PREPARED-REALTIME.md) |
 | Offline admission, cancellation and joined cleanup | [Worker lifecycle](OFFLINE-WORKERS.md) |
 | Native noise seeds and sound migration | [Randomness](RANDOMNESS.md) |
+| Exact rational clock and remaining integration | [Timing groundwork](TIMING.md) |
+| Header/implementation ownership and extraction order | [C++ boundaries](CPP-BOUNDARIES.md) |
 | Versioning and publishing | [Releasing](RELEASING.md) |
 | DigitalMania provenance and migration boundaries | [norockstar integration](NOROCKSTAR.md) |
 | Architecture lessons from nodeFlow | [nodeFlow adoption](NODEFLOW-ADOPTION.md) |

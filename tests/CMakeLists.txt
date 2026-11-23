@@ -4,6 +4,7 @@ add_executable(mam_tests
     test_commands.cpp
     test_dsp.cpp
     test_transport.cpp
+    test_rational_frame_clock.cpp
     test_audio_file.cpp
     test_native_audio.cpp
     test_cli_options.cpp

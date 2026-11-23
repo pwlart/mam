@@ -82,6 +82,9 @@ Use sample positions for DSP time; wall-clock time is for deadlines/diagnostics.
 Legacy fractional-step truncation remains an open transport issue. Musical
 session-command conversion also needs correction when actual device rate differs
 from requested rate: its bar-frame metadata is used before rack rescaling.
+The standalone [rational clock](TIMING.md) defines exact absolute conversion
+and overflow handling, but transport/playback do not use it yet. Repeated musical
+events must eventually retain fractional phase rather than add rounded periods.
 Native chip/clap noise now has node-owned state and a versioned root/scope/ID
 seed derivation. CLI seeds apply to graphs and every session rack; reset replays
 the configured stream. Chip noise and explicitly seeded clap output intentionally

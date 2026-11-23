@@ -18,6 +18,11 @@ See [governance](../GOVERNANCE.md) for how changes are reviewed.
 
 ## Completed since 0.1.0
 
+Rational timing has a [tested math boundary](TIMING.md) in preparation. It is
+not yet used by transport or playback; the P1 timing item remains open.
+[C++ implementation extraction](CPP-BOUNDARIES.md) proceeds separately from
+sound/timing changes, with explicit target dependencies and local validation.
+
 - Extracted CLI parsing, realtime session orchestration and pure rack planning
   into explicit targets, preserving offline output and existing CLI behavior.
 - Bounded multi-rack session startup/refill with one owned cursor, explicit

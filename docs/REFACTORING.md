@@ -143,6 +143,37 @@ Eight CLI comparisons retain normalized output/exit codes apart from the updated
 seed help. Hygiene, links, whitespace and local source/history secret scans pass.
 No production audio or device playback is part of this verification.
 
+## Seventh slice: compiled transport boundary and exact clock groundwork
+
+`TransportGenerator` now has a declaration header and one compiled implementation
+in `mam_core`. The function body is identical to the preceding revision; the
+mechanical commit preserves event ordering and all legacy timing behavior.
+
+The separate `RationalFrameClock` converts exact positive tick ratios to absolute
+frames with nearest/ties-up rounding and explicit overflow handling. Standard
+C++20 integer arithmetic avoids overflowing intermediate products without
+floating-point math or compiler-specific wide types. Intervals use rounded
+absolute endpoints so their starting fractional phase is retained. Eight unit
+cases cover long timelines, nonintegral tempo ratios and full-range boundaries.
+
+This remains groundwork: production transport and looping do not use the new
+clock yet. The [timing plan](TIMING.md) identifies the event, loop, trim and
+session conversions that must migrate together. The [C++ boundary policy](CPP-BOUNDARIES.md)
+defines selective source extractions, target dependencies and lifetime checks.
+
+Validation on 23 November with Apple Clang 21.0.0 and CMake 4.3.3: the extraction
+alone passes all 148 preceding native cases; the expanded 156-case suite passes
+in default, ASan and UBSan configurations. Ten generated two-second renders at
+44.1/48 kHz match the saved clean build sample-for-sample, including fractional
+tempo/swing and seeded noise. Four additional serial/four-worker comparisons
+match, and eight CLI routes retain normalized output and exit codes. Repository
+hygiene, links, whitespace and local source/history secret scans pass.
+
+These Mac results supersede the earlier environment's outstanding native checks.
+The debug, TSan, Python and release presets were not rerun for this preparation
+slice, which adds no concurrency or Python behavior. Physical audio playback and
+production music are outside this verification; no accepted master was rerendered.
+
 ## Remaining scope
 
 Broader node/device coverage, rational transport time, clap noise bias,

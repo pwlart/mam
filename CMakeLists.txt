@@ -41,6 +41,7 @@ add_library(mam_core STATIC
     src/core/MixerNode.hpp
     src/core/GraphConfig.hpp
     src/core/GraphConfig.cpp
+    src/core/RationalFrameClock.cpp
     src/offline/TransportGenerator.cpp
     src/core/Graph.hpp
     src/core/AudioBuffer.hpp

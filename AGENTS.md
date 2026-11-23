@@ -5,6 +5,10 @@ MAM is standalone: do not assume access to its author's private music workspace.
 
 - Use C++20, CMake targets, RAII, owned state, explicit frame/channel units and
   bounded memory. Keep DSP, CLI parsing, CoreAudio and offline I/O separate.
+- Put substantial non-template implementations in compiled source files with
+  explicit target dependencies; retain templates and deliberate small inline
+  primitives in headers. Follow `docs/CPP-BOUNDARIES.md`; do not require a source
+  file for every header or mix mechanical extraction with sound/timing changes.
 - Preserve sound/timing unless the issue calls for a change. Explain audible
   differences and retain regression evidence.
 - Run default configure/build/CTest for functional changes. Use ASan/UBSan for

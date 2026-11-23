@@ -45,7 +45,7 @@ tables, run `cmake --build --preset default --target docs`; review
 
 ## What the suite checks
 
-The current development suite has 148 native CTest cases: 133 doctest units and 15
+The current development suite has 156 native CTest cases: 141 doctest units and 15
 integration/tooling checks (the released 0.1.0 snapshot had 38 native cases).
 The optional `python` preset adds one CTest entry
 running 69 worker, DSP and DigitalMania pytest cases:
@@ -102,6 +102,10 @@ configure `asan` or `ubsan` with `-DMAM_ENABLE_PYTHON_TESTS=ON` before building.
 - Transport locks precede same-sample triggers; exact 48 kHz beat positions,
   swing and tempo transitions are checked. Fractional-step timing at 44.1 kHz
   remains a documented migration issue, not a passing accuracy claim.
+- The separate rational-clock cases check half-frame error bounds through long
+  timelines, ties-up rounding, endpoint intervals, nonintegral rational tempo
+  and full-range arithmetic with valid or overflowing final results. This API
+  has not yet replaced the transport generator or integer loop scheduler.
 - Float32 WAV samples and channel order round-trip exactly over multiple
   65,536-frame write chunks; integer exports stay within one LSB. Malformed
   inputs fail before file creation. An existing destination survives unchanged.
