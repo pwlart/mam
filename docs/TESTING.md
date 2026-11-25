@@ -43,6 +43,12 @@ Normal builds do not modify tracked documentation. To generate parameter
 tables, run `cmake --build --preset default --target docs`; review
 `build/default/docs/ParamTables.md` before updating the tracked document.
 
+For hosted execution, see [CI and runner recovery](CI.md). GitHub checks use an
+explicit ARM macOS label, bounded matrix concurrency and retained JUnit/log
+artifacts. A manual Intel alternative is separate architecture evidence.
+Runner-acquisition failures occur before tests or artifact upload; local passes
+do not make an unexecuted hosted check pass.
+
 ## What the suite checks
 
 The current development suite has 170 native CTest cases: 153 doctest units and 17

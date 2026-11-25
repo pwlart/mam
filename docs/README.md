@@ -7,6 +7,7 @@ Start with [getting started](GETTING-STARTED.md), then render the
 | --- | --- |
 | Commands and failure behavior | [CLI](CLI.md) |
 | Tests, sanitizers and generated fixtures | [Testing](TESTING.md) |
+| Hosted checks, retained logs and runner recovery | [CI](CI.md) |
 | Offline preparation and analysis | [Python companion](../python/README.md) |
 | Integer-frame PCM assembly | [Native stems](NATIVE-STEMS.md) |
 | Offline session repetition, resets and output migration | [Offline sessions](OFFLINE-SESSIONS.md) |
