@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -305,20 +306,28 @@ uint64_t SessionRuntime::planTotalFrames(double sessionTailMs, bool enableLoop, 
 
 std::vector<float> SessionRuntime::renderOfflineWithLoop(uint64_t frames, uint32_t maxLoops, std::vector<RackStats>* outStats) {
     std::vector<float> mix;
-    mix.assign(static_cast<size_t>(frames * channels), 0.0f);
+    if (channels == 0) {
+      throw std::invalid_argument("Session loop rendering requires at least one channel");
+    }
+    if (frames > mix.max_size() / channels) {
+      throw std::length_error("Session loop output exceeds sample storage capacity");
+    }
+    mix.assign(static_cast<size_t>(frames) * channels, 0.0f);
     if (outStats) outStats->clear();
+    if (frames == 0 || maxLoops == 0) return mix;
 
-    // Render multiple loops if requested
+    // Keep every requested frame, giving the first remainder loops one extra.
+    // Each render retains the existing local reset/command/tail behavior.
+    const uint64_t framesPerLoop = frames / maxLoops;
+    const uint64_t remainder = frames % maxLoops;
     uint64_t framesRendered = 0;
     for (uint32_t loop = 0; loop < maxLoops && framesRendered < frames; ++loop) {
-      uint64_t loopFrames = std::min(frames - framesRendered, frames / maxLoops); // Distribute frames across loops
-      if (loopFrames == 0) break;
+      const uint64_t loopFrames = framesPerLoop + (loop < remainder ? 1u : 0u);
 
       std::vector<float> loopMix = renderOffline(loopFrames, outStats);
-      // Copy loop audio to the appropriate position in the final mix
-      for (size_t i = 0; i < loopMix.size() && framesRendered + i < mix.size(); ++i) {
-        mix[framesRendered + i] += loopMix[i];
-      }
+      // Segments are disjoint; convert the frame position to interleaved samples.
+      const size_t sampleOffset = static_cast<size_t>(framesRendered) * channels;
+      std::copy(loopMix.begin(), loopMix.end(), mix.begin() + static_cast<std::ptrdiff_t>(sampleOffset));
       framesRendered += loopFrames;
     }
 

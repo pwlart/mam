@@ -18,6 +18,7 @@ add_executable(mam_tests
     test_random.cpp
     test_random_rendering.cpp
     test_seed_config.cpp
+    test_session_loop.cpp
 )
 target_include_directories(mam_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(mam_tests PRIVATE doctest::doctest mam_render mam_app)

@@ -207,6 +207,32 @@ recorded as a separate [roadmap issue](ROADMAP.md). No production music,
 physical playback, timing integration or Python behavior is part of this slice;
 debug, TSan and Python presets were not rerun.
 
+## Ninth slice: correct offline session loop placement
+
+`renderOfflineWithLoop` now concatenates segments at interleaved sample offsets
+derived from frame positions. It divides the complete requested length across
+the loop count, assigning one extra frame to each of the first remainder
+segments. Requests shorter than the loop count render their nonempty one-frame
+segments. Zero loops still return requested-length silence; zero frames render
+nothing. Invalid channels and unrepresentable sample counts fail before graph
+calls or statistics changes. See [offline session repetition](OFFLINE-SESSIONS.md).
+
+This intentionally fixes the preceding slice's preserved overlap and lost-frame
+defects. Graph reset, local events, rack offsets/gains, hard segment-end truncation
+and last-segment pre-gain statistics retain their existing policy. There is no
+new crossfade, tail overlap, loop-period inference or rational-clock integration.
+
+The first eleven regression cases exposed seven failures against the old
+implementation; a twelfth case adds a processing-block boundary check. All 170
+native cases pass in default, ASan and UBSan, and the Release/LTO build succeeds.
+Of 22 generated saved-build comparisons at 44.1/48 kHz, 18 remain bit-exact and
+four loop outputs change intentionally. Every corrected loop output matches an
+independent concatenation of nonloop segments rendered by saved 54f3763, including
+odd total lengths. Eight CLI checks remain unchanged and four serial/four-worker
+comparisons remain exact. Debug, TSan and Python presets were not rerun; this
+slice changes neither concurrency nor the Python bridge. No physical playback
+or production audio is part of this software correction.
+
 ## Remaining scope
 
 Broader node/device coverage, rational transport time, clap noise bias,

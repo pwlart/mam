@@ -45,7 +45,7 @@ tables, run `cmake --build --preset default --target docs`; review
 
 ## What the suite checks
 
-The current development suite has 158 native CTest cases: 141 doctest units and 17
+The current development suite has 170 native CTest cases: 153 doctest units and 17
 integration/tooling checks (the released 0.1.0 snapshot had 38 native cases).
 The optional `python` preset adds one CTest entry
 running 69 worker, DSP and DigitalMania pytest cases:
@@ -75,6 +75,12 @@ configure `asan` or `ubsan` with `-DMAM_ENABLE_PYTHON_TESTS=ON` before building.
   destruction, moved methods and default arguments without borrowing the
   application's aggregate dependencies. Wiretap is disabled; no file/device is
   opened. These link checks complement the generated render comparisons.
+- Twelve offline session-loop cases check literal mono/stereo sample sequences,
+  odd/even and remainder lengths, skipped empty repetitions, 1024-frame block
+  boundaries, reset/event cutoff, repeated offset/gain and final-loop meters.
+  Invalid channels and unrepresentable sample counts fail before state mutation.
+  The [offline session contract](OFFLINE-SESSIONS.md) records intentional changes
+  from legacy overlapping writes and discarded remainder frames.
 - The session cursor merges different loop lengths, overlapping tails and future
   one-shots; ties use deterministic base insertion order. Capacity boundaries
   include the real 16,383-entry queue, explicit initial-window rejection, retry

@@ -11,6 +11,7 @@ meets a hard realtime contract. Detailed findings: [nodeFlow adoption](NODEFLOW-
 | --- | --- | --- |
 | CLI/control | Loads JSON, constructs graphs, starts/stops workers and devices | Validate before activation; do not mutate a running graph from another thread |
 | Offline graph render | Serial/parallel schedulers process mutable node state | One invocation per node at a time; join work before reading final results |
+| Offline session repetition | Partition requested frames, reset/render each nonempty segment, concatenate complete interleaved frames | Preserve declared reset/tail/statistics policy; separate placement corrections from planning and musical timing |
 | Native stem render | Fixed manifest order; bounded PCM reads/writes; integer frame placement | Preserve source windows, summation order and format contracts; publish completion last |
 | Python jobs | Separate optional process, timeout, strict job schema, provenance/cache | File-based boundaries; no Python execution or package installation in the callback |
 | Realtime callback | Prepared graph/session paths use fixed routing/buffers and bounded numeric telemetry | No lazy allocation, locks, waits, file/network I/O or formatting; custom nodes need independent validation |
@@ -19,6 +20,11 @@ The device-free callback harness measures first/variable blocks and detects C++
 allocations and stdout/stderr writes in its fixtures. It does not monitor all C
 allocators, system calls or waits and cannot establish glitch-free device playback
 or safety of concurrent live edits. See [prepared realtime](PREPARED-REALTIME.md).
+
+The [offline session contract](OFFLINE-SESSIONS.md) defines remainder placement,
+zero-loop behavior, output-size guards and last-segment statistics. Its corrected
+frame/sample offsets do not fix CLI channel selection or integrate rational
+timing into duration planning.
 
 ## Node and event ownership
 

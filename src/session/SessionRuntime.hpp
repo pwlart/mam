@@ -53,6 +53,8 @@ struct SessionRuntime {
   // Plan total frames considering content length, preroll, start offsets, and looping
   uint64_t planTotalFrames(double sessionTailMs, bool enableLoop = false, uint32_t maxLoops = 1) const;
 
-  // Render with optional looping support
+  // Partition frames across maxLoops; earliest loops receive remainder frames.
+  // Concatenate reset renders, with no extra tail; stats describe the last
+  // nonempty loop. Zero loops return silence. Invalid channels/storage throw.
   std::vector<float> renderOfflineWithLoop(uint64_t frames, uint32_t maxLoops = 1, std::vector<RackStats>* outStats = nullptr);
 };

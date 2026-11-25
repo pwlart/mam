@@ -8,7 +8,7 @@ See [governance](../GOVERNANCE.md) for how changes are reviewed.
 | --- | --- | --- |
 | P0 | Extend realtime coverage and live-device verification | Exercise every supported node/configuration, C allocators, waits and deadline behavior; validate CoreAudio negotiation and fault recovery on hardware |
 | P1 | Rational beat-to-frame timing | Long-duration tempo/swing cases have explicit frame-error bounds; fractional rates no longer accumulate truncation |
-| P1 | Correct offline session loop placement | Mono/stereo loops use frame-to-sample offsets correctly and retain remainder frames; reset/tail policy and intentional PCM changes are documented |
+| P1 | Unify offline session planning and export layout | Loop counts, rack overrides, command lengths and tails share a declared frame policy; WAV channel metadata matches the session buffer |
 | P1 | Stable structured failure diagnostics | Categorize invalid input, task failure and cancellation consistently; report locations and declare safe retry boundaries |
 | P1 | Apply graph validation consistently offline | Prepared realtime graphs reject cycles/unknown links; replace the remaining offline insertion-order fallback with an explicit policy |
 | P1 | Repair manual session crossfader automation | Activate valid targets in a separate behavior patch with event/DSP comparisons; preserve the established LFO path |
@@ -30,6 +30,11 @@ sound/timing changes, with explicit target dependencies and local validation.
   `mam_nodes` and `mam_session_runtime` targets. Public headers retain their
   declarations/value types; isolated consumers verify implementation link
   dependencies. The extraction preserves existing sound and timing behavior.
+- Corrected offline session repetition in a separate behavior patch: complete
+  interleaved frames are concatenated without overlap and remainder frames are
+  retained. Output-size guards precede allocation; the existing reset, hard-tail
+  and last-segment meter policy is explicit. See [offline sessions](OFFLINE-SESSIONS.md)
+  for intentional output changes and the remaining planner/export limitations.
 - Bounded multi-rack session startup/refill with one owned cursor, explicit
   initial-window rejection, ordered retries and reported late-event recovery.
   Capacity boundaries, different loop periods, one-shots, cancellation and
@@ -56,12 +61,11 @@ their audio differences remain reviewable. Worker cancellation does not interrup
 running code or guarantee a shutdown deadline; broader node/device coverage and
 structured diagnostics remain open.
 
-The session extraction also identified existing loop placement defects:
-`renderOfflineWithLoop` currently uses a frame count as an interleaved sample
-offset and floors equal loop lengths without distributing remainder frames.
-Fix these in a separate behavior patch with distinct L/R fixtures, odd and
-nondivisible lengths, and an explicit reset/statistics/tail policy. Matching the
-saved build in the structural extraction does not validate those old semantics.
+The earlier session extraction preserved the then-existing loop placement
+defects; the subsequent correction is a separate sound migration. Duration and
+loop-count planning still use legacy arithmetic, and the CLI session WAV path
+still hard-codes stereo output metadata. Those issues remain separate from the
+runtime's corrected frame placement and the unintegrated rational-clock API.
 
 ## Useful first contributions
 

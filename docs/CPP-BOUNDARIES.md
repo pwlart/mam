@@ -48,8 +48,10 @@ performance claim separately from the organizational change.
    `mam_nodes`. `SessionRuntime.cpp` owns session loading, metering, planning
    and rendering in `mam_session_runtime`. Their public headers retain types,
    declarations and small setters. `mam_session` remains the independently
-   testable rack-planning target. These extractions preserve existing behavior,
-   including the known session timing and loop-assembly limitations.
+   testable rack-planning target. These extractions preserved existing behavior,
+   including the then-known loop-placement defects. The later
+   [offline session correction](OFFLINE-SESSIONS.md) is a separate behavior
+   patch; session planning and timing integration remain open.
 3. **Graph implementation.** Move preparation, topology, event lookup and
    routing methods from `Graph.hpp` and `PreparedGraph.inl` into `Graph.cpp`.
    Preserve prepared-state invalidation, move behavior and the exact ordering

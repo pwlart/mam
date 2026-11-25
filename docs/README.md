@@ -9,6 +9,7 @@ Start with [getting started](GETTING-STARTED.md), then render the
 | Tests, sanitizers and generated fixtures | [Testing](TESTING.md) |
 | Offline preparation and analysis | [Python companion](../python/README.md) |
 | Integer-frame PCM assembly | [Native stems](NATIVE-STEMS.md) |
+| Offline session repetition, resets and output migration | [Offline sessions](OFFLINE-SESSIONS.md) |
 | Ownership, clocks and realtime boundaries | [Engine contract](ENGINE-CONTRACT.md) |
 | Work priorities and acceptance criteria | [Roadmap](ROADMAP.md) |
 | Incremental implementation and verification | [Engine refactoring](REFACTORING.md) |
