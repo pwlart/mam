@@ -1,4 +1,4 @@
-# Offline session repetition
+# Offline session rendering and export
 
 `SessionRuntime::renderOfflineWithLoop(frames, maxLoops, outStats)` repeats
 offline session renders within an exact requested frame count. It returns
@@ -59,6 +59,25 @@ CPU measurement fields in `RackStats` are not newly populated by this wrapper.
 
 ## Compatibility and remaining limits
 
+The CLI `--session ... --wav ...` path writes the runtime's channel count to
+the selected WAV/AIFF/CAF format and reports frames using that same count.
+A mono session remains mono: its samples are not reinterpreted as alternating
+left/right samples at half the intended duration. Odd mono frame counts no
+longer fail the writer's complete-frame check. Stereo export keeps its existing
+samples, format and duration. Rendering, mixing and loop partitioning are
+unchanged by this export correction.
+
+Before loading rack graphs, this CLI path requires parsed session and bus
+channel counts of **1 or 2**. Zero channels and larger layouts fail with an
+explicit diagnostic before render allocation or output creation. Some native
+instruments/effects only implement mono/stereo indexing; accepting N-channel
+metadata would not establish correct multichannel DSP. Existing output files
+remain protected by the writer's overwrite refusal. The generic writer and
+direct runtime APIs have not acquired this CLI validation policy. Nor does
+this check replace strict JSON validation: the legacy parser can coerce numeric
+channel values before they reach the export boundary. Reverb's existing mono
+bypass and bus channel-adaptation rules remain unchanged.
+
 The factory/session source extraction preserved the previous implementation.
 The subsequent placement correction intentionally changes affected repeated
 output: the old code used a frame offset as an interleaved sample offset and
@@ -70,10 +89,9 @@ This software correction does not rerender or approve any production master.
 Planning and CLI duration/loop-count selection retain their existing arithmetic.
 `planTotalFrames` does not yet share one rational policy with commands, rack
 overrides, loop periods and tail calculations. Offline session-level commands
-are resolved but not applied. The CLI session WAV path also still selects a
-two-channel output format even when the session declares a different layout;
-mono/multichannel runtime behavior does not establish correct CLI export for
-those layouts. These are separate issues, not promises made by this fix.
+are resolved but not applied. Export channel preservation does not correct
+these separate planning/automation issues or establish support for arbitrary
+multichannel sessions.
 
 See the [timing groundwork](TIMING.md), [roadmap](ROADMAP.md),
 [testing guide](TESTING.md) and [refactoring record](REFACTORING.md) for scope

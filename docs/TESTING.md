@@ -51,7 +51,7 @@ do not make an unexecuted hosted check pass.
 
 ## What the suite checks
 
-The current development suite has 170 native CTest cases: 153 doctest units and 17
+The current development suite has 182 native CTest cases: 153 doctest units and 29
 integration/tooling checks (the released 0.1.0 snapshot had 38 native cases).
 The optional `python` preset adds one CTest entry
 running 69 worker, DSP and DigitalMania pytest cases:
@@ -87,6 +87,14 @@ configure `asan` or `ubsan` with `-DMAM_ENABLE_PYTHON_TESTS=ON` before building.
   Invalid channels and unrepresentable sample counts fail before state mutation.
   The [offline session contract](OFFLINE-SESSIONS.md) records intentional changes
   from legacy overlapping writes and discarded remainder frames.
+- Twelve CLI session-export regressions inspect generated WAV files using an
+  independent native RIFF reader. They check odd/even mono lengths, stereo and
+  default layout, repeated output, mono/stereo bus routing, Float32 and PCM16/24,
+  exact frame reporting and overwrite refusal. A separate graph render supplies
+  the waveform reference; explicit loop boundaries check sequence placement.
+  Invalid parsed session/bus layouts fail before loading a deliberately missing
+  rack or creating output. These fixtures use 48 kHz WAV; AIFF/CAF and arbitrary
+  multichannel DSP are not established by them.
 - The session cursor merges different loop lengths, overlapping tails and future
   one-shots; ties use deterministic base insertion order. Capacity boundaries
   include the real 16,383-entry queue, explicit initial-window rejection, retry
@@ -165,7 +173,7 @@ To focus a run or preserve machine-readable results:
 ctest --preset default -L unit
 ctest --preset default -L integration
 ctest --preset default -R 'tooling.parity'
-ctest --preset default --output-junit build/default/ctest.xml
+ctest --preset default --output-junit "$PWD/build/default/ctest.xml"
 ./build/default/tests/mam_tests --test-case='*automation*'
 ```
 

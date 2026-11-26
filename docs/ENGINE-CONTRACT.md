@@ -23,8 +23,10 @@ or safety of concurrent live edits. See [prepared realtime](PREPARED-REALTIME.md
 
 The [offline session contract](OFFLINE-SESSIONS.md) defines remainder placement,
 zero-loop behavior, output-size guards and last-segment statistics. Its corrected
-frame/sample offsets do not fix CLI channel selection or integrate rational
-timing into duration planning.
+frame/sample offsets are separate from CLI channel preservation: session export
+now validates mono/stereo layouts before loading racks and uses the runtime
+channel count in file metadata and frame reporting. Neither change integrates
+rational timing into duration planning.
 
 ## Node and event ownership
 

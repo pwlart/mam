@@ -85,6 +85,16 @@ add_test(NAME cli.random_seed_audio COMMAND ${CMAKE_COMMAND}
     -DMAM=$<TARGET_FILE:mam> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/random-seed-cli
     -P ${CMAKE_CURRENT_SOURCE_DIR}/random_seed_cli.cmake)
 set_tests_properties(cli.random_seed_audio PROPERTIES TIMEOUT 60 LABELS integration)
+add_executable(mam_session_export_inspector session_export_cli.cpp)
+mam_configure_target(mam_session_export_inspector)
+foreach(case IN ITEMS mono_even mono_odd stereo_odd default_stereo mono_loop stereo_loop pcm16 pcm24
+                      invalid_session_0 invalid_session_3 invalid_bus_0 invalid_bus_3)
+    add_test(NAME cli.session_export.${case} COMMAND ${CMAKE_COMMAND}
+        -DMAM=$<TARGET_FILE:mam> -DINSPECTOR=$<TARGET_FILE:mam_session_export_inspector>
+        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/session-export-${case} -DCASE=${case}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/session_export_cli.cmake)
+    set_tests_properties(cli.session_export.${case} PROPERTIES TIMEOUT 60 LABELS integration)
+endforeach()
 add_test(NAME vendor.doctest_integrity COMMAND ${CMAKE_COMMAND}
     -DROOT=${PROJECT_SOURCE_DIR}/vendor/doctest
     -P ${CMAKE_CURRENT_SOURCE_DIR}/vendor_integrity.cmake)

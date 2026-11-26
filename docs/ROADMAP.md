@@ -8,7 +8,7 @@ See [governance](../GOVERNANCE.md) for how changes are reviewed.
 | --- | --- | --- |
 | P0 | Extend realtime coverage and live-device verification | Exercise every supported node/configuration, C allocators, waits and deadline behavior; validate CoreAudio negotiation and fault recovery on hardware |
 | P1 | Rational beat-to-frame timing | Long-duration tempo/swing cases have explicit frame-error bounds; fractional rates no longer accumulate truncation |
-| P1 | Unify offline session planning and export layout | Loop counts, rack overrides, command lengths and tails share a declared frame policy; WAV channel metadata matches the session buffer |
+| P1 | Unify offline session duration planning | Loop counts, rack overrides, command lengths and tails share a declared frame policy; short/generated sessions prove exact planned end frames |
 | P1 | Stable structured failure diagnostics | Categorize invalid input, task failure and cancellation consistently; report locations and declare safe retry boundaries |
 | P1 | Apply graph validation consistently offline | Prepared realtime graphs reject cycles/unknown links; replace the remaining offline insertion-order fallback with an explicit policy |
 | P1 | Repair manual session crossfader automation | Activate valid targets in a separate behavior patch with event/DSP comparisons; preserve the established LFO path |
@@ -24,6 +24,10 @@ not yet used by transport or playback; the P1 timing item remains open.
 [C++ implementation extraction](CPP-BOUNDARIES.md) proceeds separately from
 sound/timing changes, with explicit target dependencies and local validation.
 
+- Corrected CLI session export to retain mono/stereo channel layout and report
+  the actual frame count. Unsupported parsed session/bus channel counts fail
+  before graph loading. This closes the export-layout part of the planning
+  item; duration planning and strict input validation remain open.
 - Extracted CLI parsing, realtime session orchestration and pure rack planning
   into explicit targets, preserving offline output and existing CLI behavior.
 - Moved node construction and offline session assembly into compiled
@@ -63,9 +67,27 @@ structured diagnostics remain open.
 
 The earlier session extraction preserved the then-existing loop placement
 defects; the subsequent correction is a separate sound migration. Duration and
-loop-count planning still use legacy arithmetic, and the CLI session WAV path
-still hard-codes stereo output metadata. Those issues remain separate from the
-runtime's corrected frame placement and the unintegrated rational-clock API.
+loop-count planning still use legacy arithmetic. Those issues remain separate
+from corrected frame placement/export layout and the unintegrated rational-clock API.
+
+## Next implementation sequence
+
+1. Define and test one offline duration plan covering rack overrides, commands,
+   offsets, loop counts and tails. Keep the intended audible differences explicit.
+2. Integrate the rational clock across event generation and all dependent bar,
+   loop and end calculations. Include negotiated device rates before making a
+   live timing claim; do not migrate only one rounding site.
+3. Reject invalid offline graph topology consistently, with actionable errors.
+   Then repair manual crossfader automation in its own behavior patch.
+4. Continue mechanical Graph and realtime implementation extraction separately,
+   following [C++ boundaries](CPP-BOUNDARIES.md). Keep templates and deliberately
+   small inline primitives in headers; preserve PCM in extraction commits.
+
+Realtime hardware verification remains P0 alongside this software sequence;
+it requires a device session and cannot be replaced by offline regressions.
+Hosted CI also remains a release gate: runner-capacity cancellation is not a
+test result. Validate the published revision, then review integration into main
+and required checks as separate maintainer actions. See [CI recovery](CI.md).
 
 ## Useful first contributions
 

@@ -768,6 +768,16 @@ int main(int argc, char** argv) {
     if (!sessionPath.empty()) {
       try {
         SessionSpec sess = loadSessionSpecFromJsonFile(sessionPath);
+        // The session instruments/effects support mono and stereo processing.
+        // Validate before rack construction or allocating render buffers.
+        if (sess.channels != 1 && sess.channels != 2) {
+          throw std::invalid_argument("Offline session export supports only mono or stereo channels");
+        }
+        for (const auto& bus : sess.buses) {
+          if (bus.channels != 1 && bus.channels != 2) {
+            throw std::invalid_argument("Offline session export supports only mono or stereo bus channels: " + bus.id);
+          }
+        }
         if (offlineSr > 0.0) sess.sampleRate = sr;
         SessionRuntime runtime; runtime.loadFromSpec(sess, randomSeedOverride);
 
@@ -804,10 +814,10 @@ int main(int argc, char** argv) {
           // Standard rendering for non-looping sessions
           interleaved = runtime.renderOffline(totalFrames, printMeters ? &rstats : nullptr);
         }
-        AudioFileSpec spec; spec.format = outFormat; spec.bitDepth = pcm16 ? BitDepth::Pcm16 : outDepth; spec.sampleRate = sr; spec.channels = channels;
+        AudioFileSpec spec; spec.format = outFormat; spec.bitDepth = pcm16 ? BitDepth::Pcm16 : outDepth; spec.sampleRate = sr; spec.channels = runtime.channels;
         writeWithExtAudioFile(wavPath, spec, interleaved);
         const double seconds = static_cast<double>(totalFrames) / static_cast<double>(sr);
-        std::fprintf(stderr, "Exported session to %s (frames=%llu, %.3fs)\n", wavPath.c_str(), (unsigned long long)interleaved.size()/channels, seconds);
+        std::fprintf(stderr, "Exported session to %s (frames=%llu, %.3fs)\n", wavPath.c_str(), (unsigned long long)(interleaved.size()/runtime.channels), seconds);
         if (printMeters && !rstats.empty()) {
           for (const auto& st : rstats) {
             std::fprintf(stderr, "  Rack %s: peak=%.2f dBFS rms=%.2f dBFS\n", st.id.c_str(), st.peakDb, st.rmsDb);

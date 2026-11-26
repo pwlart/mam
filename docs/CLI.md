@@ -17,6 +17,14 @@ see [the roadmap](ROADMAP.md).
 
 ## Offline mixing and jobs
 
+`--session your-session.json --wav build/session-001.wav --sr 48000` renders
+an offline session with its declared mono/stereo layout (stereo by default).
+The selected file format and frame report use the rendered channel count.
+Parsed session and bus channel counts other than 1 or 2 fail before rack
+loading/output creation. This is a layout check, not strict JSON Schema
+validation. Loop, duration and reset semantics are described in
+[offline sessions](OFFLINE-SESSIONS.md).
+
 [Native stem manifests](NATIVE-STEMS.md) define sample rate, channels, exact
 frames, fades and source windows. Inputs are PCM WAV; compressed audio needs
 explicit decoding. File paths in manifests resolve relative to the manifest.

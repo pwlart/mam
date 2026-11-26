@@ -233,6 +233,31 @@ comparisons remain exact. Debug, TSan and Python presets were not rerun; this
 slice changes neither concurrency nor the Python bridge. No physical playback
 or production audio is part of this software correction.
 
+## Tenth slice: preserve CLI session export layout
+
+Offline session export now uses the runtime channel count for file metadata
+and frame reporting. Mono samples retain their intended duration instead of
+being reinterpreted as stereo pairs; odd mono frame counts export successfully.
+The CLI rejects parsed session and bus layouts outside mono/stereo before
+loading racks. Some instruments/effects assume these layouts, so this does not
+extend arbitrary multichannel DSP support. The generic runtime/writer APIs,
+duration planning, sample synthesis and graph-only CLI path remain unchanged.
+See [offline sessions](OFFLINE-SESSIONS.md) for compatibility and input limits.
+
+Twelve independent CLI regressions generated nine expected failures and three
+passing stereo controls against saved aa29cde. They inspect RIFF data directly,
+compare with a separate graph waveform, verify explicit loop boundaries and
+exercise invalid layouts/overwrite refusal. The first full runs exposed the
+test reader's assumption about padding after a final odd-sized PCM24 data
+chunk. It now accepts CoreAudio's terminal-data convention while still rejecting
+internal missing padding and incomplete frames; original failures were retained.
+
+All 182 native cases pass in default, ASan and UBSan; Release/LTO builds.
+Twenty-two saved-build stereo graph/session render pairs remain bit-exact at
+44.1/48 kHz, including loop, bus, offset/gain and worker paths. New CLI fixtures
+cover 48 kHz WAV, not AIFF/CAF. Debug, TSan and Python presets were not rerun;
+this slice changes no concurrency, Python bridge or production audio.
+
 ## Remaining scope
 
 Broader node/device coverage, rational transport time, clap noise bias,
